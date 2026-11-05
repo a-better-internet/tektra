@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kybernetes</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="A self-regulating feedback instrument for the browser. Design a closed web of generators, multipliers and feedback, then steer it.">
+<meta name="theme-color" content="#07090f">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..800&family=Martian+Mono:wdth,wght@75..112.5,300..600&family=Michroma&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script type="module" src="js/main.js"></script>
+</head>
+<body>
+<header class="bar">
+  <div class="bar__in">
+    <div class="mark">
+      <h1 class="mark__word">Kybernetes</h1>
+      <p class="mark__sub">self-regulating feedback instrument</p>
+    </div>
+    <dl class="readouts">
+      <div class="readout"><dt>State</dt><dd id="state-chip" class="chip">Ready</dd></div>
+      <div class="readout"><dt>Elapsed</dt><dd id="elapsed" class="readout__big">00:00:00</dd></div>
+      <div class="readout"><dt>Epoch</dt><dd id="epoch">—</dd></div>
+      <div class="readout readout--era"><dt>Era</dt><dd id="era-read">×2.0 Tide</dd></div>
+    </dl>
+    <div class="bar__actions">
+      <button type="button" class="btn btn--ghost" data-perturb disabled title="Strike a short burst into the loop (P)">Perturb</button>
+      <button type="button" class="btn btn--engage" id="engage" aria-pressed="false" title="Start or halt the system (Space)">Engage</button>
+    </div>
+  </div>
+</header>
+
+<main class="page">
+  <p class="lede">Wire a web of generators, multipliers and feedback, close the loop, and let it run. The system watches its own levels and turns its own knobs; you design the rules and steer. <span class="lede__rule">No LFOs. No noise sources. No sequencers. Every movement is emergent.</span></p>
+
+  <div class="console">
+    <section class="panel helm" aria-labelledby="helm-h">
+      <header class="panel__head">
+        <span class="code">S</span><h2 class="panel__title" id="helm-h">Helm</h2>
+        <span class="panel__meta">every move glides</span>
+      </header>
+      <div class="helm__knobs" id="helm-knobs"></div>
+      <div class="helm__foot">
+        <div id="helm-level"></div>
+        <button type="button" class="btn btn--strike" data-perturb disabled>Perturb</button>
+      </div>
+      <figure class="trace">
+        <figcaption class="trace__cap"><span>Regulation</span><span class="trace__key"><i class="key key--signal"></i>loop <i class="key key--regulate"></i>setpoint</span></figcaption>
+        <canvas id="trace" class="trace__cv" aria-label="Loop level against the setpoint over the last two minutes"></canvas>
+        <p class="trace__read" id="trace-read">Waiting for the loop to close.</p>
+      </figure>
+    </section>
+
+    <section class="panel observatory" aria-labelledby="obs-h">
+      <header class="panel__head">
+        <span class="code">W</span><h2 class="panel__title" id="obs-h">The web</h2>
+        <span class="panel__meta" id="arch-name">Drift Nebula</span>
+      </header>
+      <div class="observatory__stage">
+        <canvas id="obs-back" class="observatory__cv" aria-hidden="true"></canvas>
+        <canvas id="obs-front" class="observatory__cv" role="img" aria-label="The closed web: generators and multipliers feeding the loop of tape, bank, shift and smear around the homeostat, with the output's phase portrait at the centre"></canvas>
+      </div>
+      <p class="observatory__legend"><span><i class="key key--signal"></i>pushes</span><span><i class="key key--regulate"></i>pulls back</span><span>dashed: returns and tape</span><span>centre: output phase, mid up, side across</span></p>
+    </section>
+
+    <section class="panel matrix" aria-labelledby="matrix-h">
+      <header class="panel__head">
+        <span class="code">M</span><h2 class="panel__title" id="matrix-h">Matrix</h2>
+        <span class="panel__meta">14 eyes × 18 knobs</span>
+      </header>
+      <canvas id="matrix" class="matrix__cv"></canvas>
+      <div class="inspector" id="matrix-inspector" aria-live="polite"></div>
+    </section>
+  </div>
+
+  <div class="row">
+    <section class="panel bankp" aria-labelledby="bank-h">
+      <header class="panel__head">
+        <span class="code">B</span><h2 class="panel__title" id="bank-h">Bank</h2>
+        <span class="panel__meta">24 third-octave bands, 63 Hz – 12.5 kHz</span>
+      </header>
+      <canvas id="bank" class="bank__cv"></canvas>
+      <div class="bank__foot">
+        <p class="bank__read" id="bank-read" aria-live="polite"></p>
+        <div class="btns">
+          <button type="button" class="btn btn--small" id="bank-smooth">Smooth</button>
+          <button type="button" class="btn btn--small" id="bank-invert">Invert</button>
+          <button type="button" class="btn btn--small btn--quiet" id="bank-flatten">Flatten</button>
+        </div>
+      </div>
+      <p class="bank__key"><span><i class="key key--signal"></i>band energy</span><span><i class="key key--regulate"></i>held down by its inverted VCA</span><span><i class="key key--ink"></i>carving you draw</span><span><i class="key key--dots"></i>carving as the system bends it</span></p>
+    </section>
+
+    <section class="panel logp" aria-labelledby="log-h">
+      <header class="panel__head">
+        <span class="code">Λ</span><h2 class="panel__title" id="log-h">Logbook</h2>
+        <span class="panel__meta">epochs, steering, events</span>
+      </header>
+      <ol class="log" id="log" aria-live="polite"></ol>
+    </section>
+  </div>
+
+  <section class="panel chron" aria-labelledby="chron-h">
+    <header class="panel__head">
+      <span class="code">T</span><h2 class="panel__title" id="chron-h">Chronicle</h2>
+      <fieldset class="seg">
+        <legend class="sr-only">Span shown</legend>
+        <label><input type="radio" name="span" value="fit" checked><span>Whole run</span></label>
+        <label><input type="radio" name="span" value="1h"><span>1 h</span></label>
+        <label><input type="radio" name="span" value="4h"><span>4 h</span></label>
+        <label><input type="radio" name="span" value="14h"><span>14 h</span></label>
+      </fieldset>
+    </header>
+    <canvas id="chronicle" class="chron__cv" role="img" aria-label="Spectral history of the whole run, low bands at the bottom, with epochs marked above and steering marked below"></canvas>
+    <p class="chron__cap" id="chronicle-cap"></p>
+  </section>
+
+  <section class="arch" aria-labelledby="arch-h">
+    <header class="arch__head">
+      <h2 class="arch__title" id="arch-h">Architecture</h2>
+      <p class="arch__lede">The composer’s part: what the web is made of and how it is wired. Changes apply to the running system as they happen.</p>
+    </header>
+    <div class="toolbar">
+      <div class="toolbar__group">
+        <label class="field" for="arch-preset"><span class="field__k">Architectures</span>
+          <select id="arch-preset" class="select"></select>
+        </label>
+        <button type="button" class="btn" id="arch-load">Load</button>
+        <p class="toolbar__note" id="arch-preset-note"></p>
+      </div>
+      <form class="toolbar__group" id="arch-derive-form">
+        <label class="field" for="arch-derive"><span class="field__k">Derive from a name</span>
+          <input id="arch-derive" class="input" type="text" placeholder="andromeda" autocomplete="off" maxlength="60">
+        </label>
+        <button type="submit" class="btn">Derive</button>
+        <p class="toolbar__note">The same name always builds the same web.</p>
+      </form>
+      <div class="toolbar__group">
+        <button type="button" class="btn" id="arch-copy">Copy code</button>
+        <button type="button" class="btn" id="arch-paste">Paste code</button>
+        <button type="button" class="btn btn--quiet" id="arch-reset">Reset run</button>
+      </div>
+      <div class="toolbar__row" id="arch-code-row" hidden>
+        <label class="sr-only" for="arch-code">Architecture code</label>
+        <textarea id="arch-code" class="input input--code" rows="3" spellcheck="false" placeholder="Paste a code starting with KYB1."></textarea>
+        <div class="btns">
+          <button type="button" class="btn" id="arch-apply">Apply code</button>
+          <button type="button" class="btn btn--quiet" id="arch-code-close">Close</button>
+        </div>
+      </div>
+      <div class="toolbar__row confirm" id="reset-confirm" hidden>
+        <p>Clear the tape and reel memory and restart the clock? The architecture stays as it is.</p>
+        <div class="btns">
+          <button type="button" class="btn btn--warn" id="reset-go">Clear and restart</button>
+          <button type="button" class="btn btn--quiet" id="reset-cancel">Keep running</button>
+        </div>
+      </div>
+    </div>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section class="guide" aria-labelledby="guide-h">
+    <h2 class="arch__title" id="guide-h">How the machine works</h2>
+    <dl class="guide__list">
+      <div><dt>The architect</dt><dd>You do not play notes. You design a web of modules and the rules that connect them, then switch it on. The music is whatever the web does.</dd></div>
+      <div><dt>A closed loop</dt><dd>There are no open ends. The loop’s output returns to the tape, to the last multiplier and to the generators’ phase, and reels record the output back into the system.</dd></div>
+      <div><dt>Multiplication, not addition</dt><dd>Four ring multipliers run in series. A product cancels the frequencies that went in and leaves their sums and differences, so one small change shatters into many sidebands.</dd></div>
+      <div><dt>Multiplied feedback</dt><dd>Inside the loop sit a tape delay, a bank of third-octave filters, a single-sideband frequency shifter and a smearing reverberator. Every pass is re-carved, re-pitched and smeared.</dd></div>
+      <div><dt>Eyes</dt><dd>Envelope followers read levels, spectral balance, change and regulation pressure. They get used to what they see, so they report deviation, and the matrix turns that into control voltage.</dd></div>
+      <div><dt>Homeostasis</dt><dd>Every band has an inverted VCA that holds it down when it grows too loud and lets go slowly. The loop as a whole inhales toward the setpoint and exhales past it, so it reaches the brink, saves itself and grows back changed.</dd></div>
+      <div><dt>No predictable tools</dt><dd>There are no LFOs, no noise generators and no step sequencers. Rhythm and events come from oscillators pulling toward shared ratios, gates flipping and loops fighting for stability.</dd></div>
+      <div><dt>Tapes and logic</dt><dd>Reels hold concrete material: the system’s own past, or a sound you load. Logic gates compare what the eyes see and decide when reels record and which come up in the mix.</dd></div>
+      <div><dt>Cosmic time</dt><dd>Era stretches every slow process, from weather (seconds) to aeons (tens of minutes). Systems like this need hours to show what they are. The chronicle keeps the whole run.</dd></div>
+      <div><dt>The steersman</dt><dd>The helm nudges: inflow, bias, drift, setpoint, coupling, era. Every move glides, so you push the system out of one equilibrium and watch it organise itself into another.</dd></div>
+    </dl>
+  </section>
+</main>
+
+<footer class="foot">
+  <p><kbd>Space</kbd> engage or halt · <kbd>P</kbd> perturb · Knobs: drag, arrow keys, or scroll while focused · double-click resets</p>
+  <p>Nothing in this instrument draws a random number while it runs. The same architecture, left alone, takes the same path.</p>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
