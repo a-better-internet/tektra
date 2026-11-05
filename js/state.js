@@ -91,7 +91,7 @@ const pin = (s, d, a) => [S[s], D[d], a];
 
 export function defaultArch() {
   return {
-    v: 1,
+    v: 2,
     name: 'Drift Nebula',
     gens: [{ f: 92.5, fold: 0.7 }, { f: 138.6, fold: 0.5 }, { f: 207.7, fold: 0.8 }, { f: 349.2, fold: 0.4 }],
     sync: 0.15,
@@ -100,7 +100,7 @@ export function defaultArch() {
     drive: 1.4,
     loop: { fb: 0.9, time: 1.6, spread: 1.13, tone: 0.95, shift: 0.35, shiftSpread: 1, smear: 0.25, decay: 0.55, cross: 0.25 },
     bank: { q: 8, gains: bumps([[4, 2.5, 0.55], [11, 2.2, 0.6], [17, 1.8, 0.65], [21.5, 1.5, 0.35]], 0.15) },
-    homeo: { ceil: -8, strength: 0.85, release: 1.6, breath: 0.4, depth: 6 },
+    homeo: { ceil: 6, strength: 0.85, release: 1.6, breath: 0.4, depth: 6, metab: 1 },
     matrix: [
       pin('LOW', 'P1', -0.22), pin('HIGH', 'P2', 0.18), pin('CENT', 'P3', -0.3), pin('LOOP', 'P4', 0.15),
       pin('FLUX', 'TAPE', 0.3), pin('CLMP', 'ROT', 0.55), pin('OUT', 'SMR', -0.3), pin('MID', 'SHFT', 0.4),
@@ -146,10 +146,10 @@ export const PRESETS = [
   variant('Iron Weather', 'Inharmonic generators, deep multiplication and narrow bands. Metallic squalls that ring and clamp.', (a) => {
     a.gens = [{ f: 97, fold: 0.6 }, { f: 157, fold: 0.3 }, { f: 254, fold: 0.7 }, { f: 411, fold: 0.2 }];
     a.mult = [1, 1, 0.8, 0.6];
-    a.drive = 2;
-    a.loop = { fb: 0.95, time: 0.31, spread: 1.21, tone: 0.8, shift: 4.5, shiftSpread: 0, smear: 0.3, decay: 0.5, cross: 0.15 };
-    a.bank = { q: 9, gains: bumps([[9, 2, 0.6], [14, 1.2, 0.7], [19, 1.5, 0.6]], 0.08) };
-    a.homeo = { ceil: -9, strength: 1, release: 0.7, breath: 0.7, depth: 8 };
+    a.drive = 1.7;
+    a.loop = { fb: 1, time: 0.31, spread: 1.21, tone: 0.8, shift: 2.5, shiftSpread: 0, smear: 0.3, decay: 0.5, cross: 0.15 };
+    a.bank = { q: 7, gains: bumps([[9, 2, 0.6], [14, 1.4, 0.7], [19, 1.6, 0.6]], 0.1) };
+    a.homeo = { ceil: 4, strength: 1, release: 0.7, breath: 0.7, depth: 8, metab: 1 };
     a.helm.era = 1;
     a.helm.setpoint = -22;
   }),
@@ -157,8 +157,8 @@ export const PRESETS = [
     a.gens = [{ f: 61.7, fold: 0.9 }, { f: 62.1, fold: 0.8 }, { f: 123.9, fold: 0.7 }, { f: 186.3, fold: 1.0 }];
     a.sync = 0.55;
     a.pm = 0.15;
-    a.loop = { fb: 1.0, time: 0.18, spread: 1.5, tone: 0.55, shift: -0.8, shiftSpread: 1, smear: 0.25, decay: 0.4, cross: 0.3 };
-    a.homeo = { ceil: -8, strength: 1.1, release: 0.35, breath: 1.2, depth: 9 };
+    a.loop = { fb: 1.05, time: 0.18, spread: 1.5, tone: 0.55, shift: -0.8, shiftSpread: 1, smear: 0.25, decay: 0.4, cross: 0.3 };
+    a.homeo = { ceil: 5, strength: 1.1, release: 0.35, breath: 1.1, depth: 6, metab: 1 };
     a.matrix.push(pin('FLUX', 'FDBK', -0.5), pin('L1', 'SYNC', 0.5), pin('CLMP', 'P2', 0.15));
     a.helm.era = 0.5;
     a.helm.setpoint = -18;
@@ -180,7 +180,7 @@ export const PRESETS = [
     a.gens = [{ f: 27.5, fold: 1.2 }, { f: 41.2, fold: 1.0 }, { f: 61.7, fold: 1.1 }, { f: 92.5, fold: 0.8 }];
     a.loop = { fb: 0.94, time: 5.5, spread: 1.09, tone: 0.45, shift: -0.9, shiftSpread: 0.15, smear: 0.75, decay: 0.8, cross: 0.35 };
     a.bank = { q: 5, gains: bumps([[3, 3, 0.9], [10, 2.5, 0.6], [15.5, 2, 0.45]], 0.12) };
-    a.homeo = { ceil: -6, strength: 0.8, release: 3, breath: 0.25, depth: 5 };
+    a.homeo = { ceil: 8, strength: 0.8, release: 3, breath: 0.25, depth: 5, metab: 1 };
     a.out.space = 0.55;
     a.helm.era = 16;
     a.helm.setpoint = -19;
@@ -268,7 +268,7 @@ export function deriveArch(word) {
   const list = [];
   for (let i = 0; i < nb; i++) list.push([range(1, 22), range(1, 4), range(0.3, 0.9)]);
   a.bank = { q: round(range(3, 11), 2), gains: bumps(list, round(range(0.05, 0.2))) };
-  a.homeo = { ceil: Math.round(range(-12, -4)), strength: round(range(0.6, 1.05)), release: round(range(0.4, 3.2)), breath: round(range(0.2, 1)), depth: Math.round(range(4, 10)) };
+  a.homeo = { ceil: Math.round(range(3, 10)), strength: round(range(0.6, 1.05)), release: round(range(0.4, 3.2)), breath: round(range(0.2, 1)), depth: Math.round(range(4, 10)), metab: 1 };
   const pins = new Map();
   const nPins = 11 + Math.floor(r() * 9);
   for (let i = 0; i < nPins; i++) {
@@ -325,7 +325,14 @@ export function normalizeArch(input) {
   };
   a.bank = { q: num(input.bank?.q, d.bank.q, 1.5, 24), gains: d.bank.gains.map((g, k) => num(input.bank?.gains?.[k], g, 0, 1.5)) };
   const H = input.homeo || {};
-  a.homeo = { ceil: num(H.ceil, d.homeo.ceil, -30, 6), strength: num(H.strength, d.homeo.strength, 0, 1.5), release: num(H.release, d.homeo.release, 0.05, 30), breath: num(H.breath, d.homeo.breath, 0, 2), depth: num(H.depth, d.homeo.depth, 1, 24) };
+  // Version 1 measured the band ceiling against the setpoint; version 2 measures
+  // it against an even share of the spectrum.
+  const ceil = (input.v || 1) < 2 && typeof H.ceil === 'number' ? H.ceil + 14 : H.ceil;
+  a.homeo = {
+    ceil: num(ceil, d.homeo.ceil, 0, 24), strength: num(H.strength, d.homeo.strength, 0, 1.5),
+    release: num(H.release, d.homeo.release, 0.05, 30), breath: num(H.breath, d.homeo.breath, 0, 2),
+    depth: num(H.depth, d.homeo.depth, 1, 24), metab: num(H.metab, d.homeo.metab, 0, 2),
+  };
   if (Array.isArray(input.matrix)) {
     const seen = new Map();
     for (const p of input.matrix) {

@@ -34,7 +34,7 @@ export function buildArchitecture(root, api) {
       id: `k-${path.replace(/\./g, '-')}`,
       value: getPath(getArch(), path),
       onInput: (v) => { setPath(getArch(), path, v); changed(path); },
-      onCommit: () => changed(path, true),
+      onCommit: () => changed(path, true, def.label),
     });
     syncs.push(() => k.set(getPath(getArch(), path), { silent: true }));
     return k.el;
@@ -98,14 +98,16 @@ export function buildArchitecture(root, api) {
       knob('loop.cross', { label: 'Cross', min: 0, max: 0.5, format: fmt.pct, title: 'Left and right returns feeding each other' })));
 
   /* ---- homeostasis ---- */
-  const homeoCard = card('homeo', 'H', 'Homeostasis', 'Each band has an envelope follower driving an inverted VCA: past the ceiling it is held down, then slowly let go. The loop as a whole inhales toward the setpoint and exhales past it.',
+  const homeoCard = card('homeo', 'H', 'Homeostasis', 'Each band has an envelope follower driving an inverted VCA: a band that rises past the ceiling is held down, then slowly let go. The loop as a whole inhales toward the setpoint and exhales past it, and a slower metabolism keeps the breathing itself from settling into a routine.',
     h('div', { class: 'knobs knobs--grid' },
-      knob('homeo.ceil', { label: 'Ceiling', min: -30, max: 6, format: fmt.db, title: 'Band level, relative to the setpoint, above which a band is held down' }),
+      knob('homeo.ceil', { label: 'Ceiling', min: 0, max: 24, format: fmt.db, title: 'How far above an even share of the spectrum a band may rise before its inverted VCA holds it down' }),
       knob('homeo.strength', { label: 'Hold', min: 0, max: 1.5, format: fmt.num, title: 'How hard a loud band is held: 1 holds it at the ceiling' }),
       knob('homeo.release', { label: 'Release', min: 0.05, max: 30, curve: 'log', format: fmt.sec, title: 'How slowly a held band opens again (stretched by Era)' }),
       knob('homeo.breath', { label: 'Breath', min: 0, max: 2, format: fmt.num, title: 'How fast the loop inhales and exhales' }),
       knob('homeo.depth', { label: 'Depth', min: 1, max: 24, format: fmt.db, title: 'How far the loop falls on each exhale' }),
-      knob('bank.q', { label: 'Precision', min: 1.5, max: 24, curve: 'log', format: fmt.q, title: 'Filter Q of the bank: 4.3 is a true third-octave, higher rings' })));
+      knob('bank.q', { label: 'Precision', min: 1.5, max: 24, curve: 'log', format: fmt.q, title: 'Filter Q of the bank: 4.3 is a true third-octave, higher rings' }),
+      knob('homeo.metab', { label: 'Metabolism', min: 0, max: 2, format: fmt.pct, title: 'A slower regulator that watches the breathing. When it turns clock-like or stops changing, the metabolism shifts the setpoint, depth and ceiling. 0% turns it off.' })),
+    live.metab = h('p', { class: 'card__live', id: 'metab-live', text: 'The metabolism is resting.' }));
 
   /* ---- logic ---- */
   const srcOptions = SOURCES.map((s, i) => ({ id: i, label: `${s.code} · ${s.short}` }));
@@ -120,9 +122,9 @@ export function buildArchitecture(root, api) {
     gateRows.append(h('div', { class: 'gate' },
       h('div', { class: 'gate__id' }, lamp, h('b', { text: `L${g + 1}` })),
       h('div', { class: 'gate__fields' },
-        select(`gate-${g}-a`, 'A', srcOptions, () => getArch().gates[g].a, (v) => { getArch().gates[g].a = +v; changed(`gates.${g}.a`, true); }),
-        select(`gate-${g}-mode`, 'Rule', GATE_MODES, () => getArch().gates[g].mode, (v) => { getArch().gates[g].mode = v; changed(`gates.${g}.mode`, true); }),
-        select(`gate-${g}-b`, 'B', bOptions, () => getArch().gates[g].b, (v) => { getArch().gates[g].b = +v; kWrap.style.visibility = +v !== -1 ? 'hidden' : ''; changed(`gates.${g}.b`, true); })),
+        select(`gate-${g}-a`, 'A', srcOptions, () => getArch().gates[g].a, (v) => { getArch().gates[g].a = +v; changed(`gates.${g}.a`, true, 'A'); }),
+        select(`gate-${g}-mode`, 'Rule', GATE_MODES, () => getArch().gates[g].mode, (v) => { getArch().gates[g].mode = v; changed(`gates.${g}.mode`, true, 'rule'); }),
+        select(`gate-${g}-b`, 'B', bOptions, () => getArch().gates[g].b, (v) => { getArch().gates[g].b = +v; kWrap.style.visibility = +v !== -1 ? 'hidden' : ''; changed(`gates.${g}.b`, true, 'B'); })),
       h('div', { class: 'gate__knobs' },
         kWrap,
         knob(`gates.${g}.h`, { label: 'Hyst', min: 0, max: 0.5, format: fmt.num, title: 'Hysteresis: how far past B the comparison must go before the gate changes' }))));
@@ -138,7 +140,7 @@ export function buildArchitecture(root, api) {
     const recLamp = h('span', { class: 'lamp lamp--rec', 'aria-hidden': 'true' });
     const file = h('input', { type: 'file', accept: 'audio/*', id: `reel-${r}-file`, class: 'sr-only' });
     const lenWrap = h('div', {}, knob(`reels.${r}.len`, { label: 'Length', min: 0.5, max: 24, curve: 'log', format: fmt.sec, title: 'Loop length of a self-recording reel' }));
-    const recWrap = select(`reel-${r}-rec`, 'Records', REC_SOURCES, () => getArch().reels[r].rec, (v) => { getArch().reels[r].rec = +v; changed(`reels.${r}.rec`, true); });
+    const recWrap = select(`reel-${r}-rec`, 'Records', REC_SOURCES, () => getArch().reels[r].rec, (v) => { getArch().reels[r].rec = +v; changed(`reels.${r}.rec`, true, 'recording'); });
     const loadBtn = h('label', { class: 'btn btn--small', for: `reel-${r}-file` }, 'Load sound');
     const capBtn = h('button', { type: 'button', class: 'btn btn--small' }, 'Capture 8 s');
     const clrBtn = h('button', { type: 'button', class: 'btn btn--small btn--quiet' }, 'Clear');
@@ -156,7 +158,7 @@ export function buildArchitecture(root, api) {
         getArch().reels[r].mode = 'tape';
         refresh();
         api.syncAll();
-        changed(`reels.${r}.mode`, true);
+        changed(`reels.${r}.mode`, true, 'sound');
         notify(`Reel ${r + 1} holds “${f.name}” (${secs.toFixed(1)} s).`);
       } catch (err) {
         notify(`Reel ${r + 1} could not read that file. Try a WAV, MP3, OGG or M4A file. (${err.message})`, 'error');
@@ -179,7 +181,7 @@ export function buildArchitecture(root, api) {
     live.reels.push({ status, recLamp });
     reels.append(h('div', { class: 'reel' },
       h('div', { class: 'gen__head' }, h('b', { text: `R${r + 1}` }), recLamp, status),
-      select(`reel-${r}-mode`, 'Mode', reelModes, () => getArch().reels[r].mode, (v) => { getArch().reels[r].mode = v; refresh(); changed(`reels.${r}.mode`, true); }),
+      select(`reel-${r}-mode`, 'Mode', reelModes, () => getArch().reels[r].mode, (v) => { getArch().reels[r].mode = v; refresh(); changed(`reels.${r}.mode`, true, 'mode'); }),
       h('div', { class: 'knobs' },
         lenWrap,
         knob(`reels.${r}.level`, { label: 'Level', min: 0, max: 1.25, format: fmt.pct, title: 'Base level of this reel in the mix' }),
@@ -225,6 +227,14 @@ export function buildArchitecture(root, api) {
     live,
     update(frame) {
       for (let i = 0; i < 4; i++) live[`gen${i}`].textContent = `${fmt.hz(frame.gens[i])}`;
+      const st = frame.stat;
+      if (st.length > 21) {
+        const moved = Math.abs(st[15]) + Math.abs(st[16]) + Math.abs(st[17]) > 0.1;
+        live.metab.textContent = getArch().homeo.metab === 0 ? 'The metabolism is off.'
+          : moved || st[18] > 0.02
+            ? `Setpoint ${fmt.db(st[15])}, depth ${fmt.db(st[16])}, ceiling ${fmt.db(st[17])} · pressure ${Math.round(st[18] * 100)}% · ${st[20]} shift${st[20] === 1 ? '' : 's'} so far`
+            : 'The metabolism is resting: the breathing is varied enough.';
+      }
       for (let g = 0; g < 4; g++) live.lamps[g].style.setProperty('--on', frame.gates[g].toFixed(3));
       for (let r = 0; r < 4; r++) {
         const len = frame.reels[r * 4 + 3];

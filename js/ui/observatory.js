@@ -160,6 +160,16 @@ export class Observatory {
       ctx.stroke();
     }
 
+    // metabolism: pressure builds around the orbit as the breathing settles into a routine
+    if (frame && frame.stat.length > 21 && frame.stat[18] > 0.01) {
+      ctx.strokeStyle = rgba(theme.signal, 0.4);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R + 13, -Math.PI / 2, -Math.PI / 2 + Math.min(1, frame.stat[18]) * Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+
     // homeostat: the eye ring breathes with the regulation
     const hold = frame ? frame.stat[7] : 0;
     const inhale = frame ? frame.stat[13] > 0.5 : true;

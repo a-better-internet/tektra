@@ -177,13 +177,14 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.tapeR = new Float32Array(this.tapeLen);
     this.tw = 0;
     this.tlp = 0; this.trp = 0;
-    this.tapeS = 1;
+    this.tapeS = 1; this.tapeV = 0; this.spreadS = 1.1;
 
     // Reels: a self-recording buffer and a held-material buffer each
     this.reelMax = Math.ceil(sr * 24);
     this.selfBuf = [0, 1, 2, 3].map(() => new Float32Array(this.reelMax));
     this.heldBuf = [null, null, null, null];
     this.heldLen = new Int32Array(4);
+    this.heldGen = new Uint32Array(4);
     this.reelMode = new Uint8Array(4);    // 0 off, 1 self, 2 held tape
     this.reelSelfLen = new Int32Array(4).fill(sr * 6);
     this.reelBase = new Float64Array(4);
@@ -195,6 +196,11 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.reelBuf = [null, null, null, null];
     this.reelLen = new Int32Array(4);
     this.capture = -1; this.captureLeft = 0; this.captureW = 0;
+    this.reelFade = new Float64Array(4).fill(1);  // fades a reel out before it changes
+    this.reelWant = [null, null, null, null];     // a pending change, applied once faded
+    this.reelFadeT = new Float64Array(4).fill(1);
+    this.reelWin = new Float64Array(4).fill(sr * 0.04);
+    this.reelSig = ['', '', '', ''];
 
     // Generators
     this.ph = new Float64Array([0, 0.25, 0.5, 0.75]);
@@ -214,10 +220,15 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.dbg = new Float64Array(NB);
     this.cg = new Float64Array(NB).fill(1);  // inverted-VCA gain per band
     this.eff = new Float64Array(NB);     // carving after tilt and rotation
+    this.lvl = new Float64Array(NB);     // band level before its inverted VCA
     this.post = new Float64Array(NB);    // band energy after gain
     this.user = new Float64Array(NB).fill(0.6);
     this.bankQ = 0;
-    this.bankNorm = 1;
+    this.bankNorm = 1;       // normalisation of the flat bank
+    this.carveNorm = 1;      // normalisation of the bank as currently carved
+    this.hRe = new Float64Array(NB * NB);
+    this.hIm = new Float64Array(NB * NB);
+    this.normTick = 0;
 
     // Shifter and smear
     this.hL = new Hilbert(); this.hR = new Hilbert();
@@ -233,6 +244,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.trim = 0; this.fastG = 1; this.loopNorm = 1;
     this.clampAmt = 0; this.centHz = 500;
     this.mixMono = 0;
+    this.recEnv = 0; this.recAlc = 1;
     this.hpL1 = 0; this.hpL2 = 0; this.hpR1 = 0; this.hpR2 = 0;
     {
       const w = TWO_PI * 32 / sr, al = Math.sin(w) / (2 * Math.SQRT1_2), a0 = 1 + al;
@@ -241,7 +253,10 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       this.hpA1 = -2 * Math.cos(w) / a0;
       this.hpA2 = (1 - al) / a0;
     }
-    this.limEnv = 0; this.limG = 1;
+    this.limEnv = 0; this.limG = 1; this.limHold = 0;
+    this.limN = Math.max(16, Math.round(sr * 0.0015));
+    this.limBufL = new Float32Array(this.limN); this.limBufR = new Float32Array(this.limN); this.limI = 0;
+    this.limAtk = 1 - Math.exp(-4 / this.limN);
 
     // Perturbation (the steersman's strike)
     this.pertOn = false; this.pertT = 0; this.pertPh = 0; this.pertA = 0;
@@ -273,8 +288,11 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.fbBase = 0.9; this.timeBase = 1.6; this.spread = 1.1; this.toneK = 0.3;
     this.shiftBase = 0.3; this.shiftSpread = 1; this.smearBase = 0.4; this.decay = 0.6;
     this.cross = 0.2;
-    this.ceil = -7; this.strength = 0.85; this.release = 1.2; this.breath = 0.4; this.depth = 6;
-    this.inhale = true; this.trimPeak = 0; this.breaths = 0;
+    this.fbCap = 4;
+    this.ceil = 6; this.ceilEff = 6; this.strength = 0.85; this.release = 1.2; this.breath = 0.4; this.depth = 6;
+    this.inhale = true; this.trimPeak = 0; this.breaths = 0; this.dipped = true;
+    this.metab = 1;
+    this.resetMetab();
     this.reelToLoop = 0.4; this.reelToMult = 0.2; this.liveIn = 0;
     this.outLoop = 0.9; this.outDry = 0.12; this.outReels = 0.35; this.outSpace = 0.35;
 
@@ -326,11 +344,12 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     const q = clamp(+bank.q || 4.3, 1.5, 24);
     if (q !== this.bankQ) this.setBank(q);
     const H = a.homeo;
-    this.ceil = clamp(+H.ceil, -30, 6);
+    this.ceil = clamp(+H.ceil, 0, 24);
     this.strength = clamp(+H.strength, 0, 1.5);
     this.release = clamp(+H.release, 0.05, 30);
     this.breath = clamp(+H.breath, 0, 2);
     this.depth = clamp(+H.depth || 6, 1, 24);
+    this.metab = H.metab === undefined ? 1 : clamp(+H.metab, 0, 2);
     this.M.fill(0);
     for (const p of a.matrix || []) {
       const i = p[0] | 0, j = p[1] | 0;
@@ -413,10 +432,56 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       cnt++;
     }
     this.bankNorm = cnt / Math.max(1e-6, acc);
+    // Each band's response at every band centre, for normalising the carved bank.
+    for (let k = 0; k < NB; k++) {
+      const w = TWO_PI * BAND_HZ[k] / sr;
+      const c1 = Math.cos(w), s1 = Math.sin(w), c2 = Math.cos(2 * w), s2 = Math.sin(2 * w);
+      for (let j = 0; j < NB; j++) {
+        const b0 = this.b0[j];
+        const o = j * NB + k;
+        if (b0 === 0) { this.hRe[o] = 0; this.hIm[o] = 0; continue; }
+        const nr = b0 * (1 - c2), ni = b0 * s2;
+        const dr = 1 + this.a1[j] * c1 + this.a2[j] * c2;
+        const di = -this.a1[j] * s1 - this.a2[j] * s2;
+        const den = dr * dr + di * di;
+        this.hRe[o] = (nr * dr + ni * di) / den;
+        this.hIm[o] = (ni * dr - nr * di) / den;
+      }
+    }
+    this.normTick = 0;
+  }
+
+  /* What a reel would play now; a change of this means a fade first. */
+  reelSignature(r) {
+    const m = this.reelMode[r];
+    if (m === 1) return `self:${this.reelSelfLen[r]}`;
+    if (m === 2 && this.heldBuf[r]) return `held:${this.heldLen[r]}:${this.heldGen[r]}`;
+    return 'off';
+  }
+
+  /* Ask for a reel to change; it fades out, changes, and fades back in. */
+  requestReel(r, action) {
+    const silent = this.reelLen[r] === 0 || this.reelFade[r] < 0.002 || !this.running;
+    if (silent) {
+      if (action) action();
+      this.selectReel(r);
+      this.reelFade[r] = 0;
+      return;
+    }
+    const prev = this.reelWant[r];
+    this.reelWant[r] = () => { if (prev) prev(); if (action) action(); };
   }
 
   selectReels() {
     for (let r = 0; r < 4; r++) {
+      const sig = this.reelSignature(r);
+      if (sig !== this.reelSig[r]) this.requestReel(r, null);
+    }
+  }
+
+  selectReel(r) {
+    this.reelSig[r] = this.reelSignature(r);
+    {
       const m = this.reelMode[r];
       if (m === 1) { this.reelBuf[r] = this.selfBuf[r]; this.reelLen[r] = this.reelSelfLen[r]; }
       else if (m === 2 && this.heldBuf[r]) { this.reelBuf[r] = this.heldBuf[r]; this.reelLen[r] = this.heldLen[r]; }
@@ -426,6 +491,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         if (this.reelPos[r] >= len) this.reelPos[r] %= len;
         if (this.reelW[r] >= len) this.reelW[r] = 0;
       }
+      this.reelWin[r] = Math.max(32, Math.min(this.sr * 0.04, len / 6));
     }
   }
 
@@ -447,19 +513,23 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       case 'reel-load': {
         const r = m.reel | 0;
         if (r < 0 || r > 3 || !(m.data instanceof Float32Array)) break;
-        this.heldBuf[r] = m.data;
-        this.heldLen[r] = m.data.length;
-        this.reelPos[r] = 0;
-        this.selectReels();
-        this.port.postMessage({ type: 'reel-loaded', reel: r, seconds: m.data.length / this.sr });
+        const data = m.data;
+        this.requestReel(r, () => {
+          this.heldBuf[r] = data;
+          this.heldLen[r] = data.length;
+          this.heldGen[r]++;
+          this.reelPos[r] = 0;
+        });
+        this.port.postMessage({ type: 'reel-loaded', reel: r, seconds: data.length / this.sr });
         break;
       }
       case 'reel-clear': {
         const r = m.reel | 0;
         if (r < 0 || r > 3) break;
-        this.selfBuf[r].fill(0);
-        this.heldBuf[r] = null; this.heldLen[r] = 0;
-        this.selectReels();
+        this.requestReel(r, () => {
+          this.selfBuf[r].fill(0);
+          this.heldBuf[r] = null; this.heldLen[r] = 0; this.heldGen[r]++;
+        });
         break;
       }
       case 'capture': {
@@ -487,9 +557,12 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.lastL = this.lastR = 0;
     this.envCasc = this.envLoop = this.envOut = this.envReel = 0;
     this.loopDb = -90; this.loopSlow = -60; this.trim = 0; this.fastG = 1;
-    this.inhale = true; this.trimPeak = 0; this.breaths = 0;
-    this.hpL1 = this.hpL2 = this.hpR1 = this.hpR2 = 0; this.limEnv = 0; this.limG = 1;
+    this.inhale = true; this.trimPeak = 0; this.breaths = 0; this.dipped = true;
+    this.resetMetab();
+    this.hpL1 = this.hpL2 = this.hpR1 = this.hpR2 = 0; this.limEnv = 0; this.limG = 1; this.limHold = 0;
+    this.limBufL.fill(0); this.limBufR.fill(0);
     this.md.fill(0); this.gState.fill(0); this.gCmp.fill(0); this.gS.fill(0); this.habitSet.fill(0);
+    this.recEnv = 0; this.recAlc = 1;
     this.elapsed = 0;
     this.primeRamps();
   }
@@ -499,12 +572,118 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     const P = this.P, dP = this.dP;
     for (let i = 0; i < NRAMP; i++) { P[i] += dP[i] * CR; dP[i] = 0; }
     for (let k = 0; k < NB; k++) { this.bg[k] += this.dbg[k] * CR; this.dbg[k] = 0; }
-    this.tapeS = this.timeBase;
+    this.tapeS = this.timeBase; this.tapeV = 0;
+    this.spreadS = clamp(this.timeBase * this.spread, 0.01, 9) / this.timeBase;
     P[R_DL] = this.timeBase * this.sr;
     P[R_DR] = clamp(this.timeBase * this.spread, 0.01, 9) * this.sr;
   }
 
   ramp(i, v) { this.dP[i] = (v - this.P[i]) / CR; }
+
+  /* ---------- metabolism: the regulator of the regulator ----------
+   * The homeostat breathes. The metabolism watches the breathing over many
+   * minutes. When the breaths become clock-like, or stop, pressure builds;
+   * when it is full the metabolism shifts the setpoint, breath depth and
+   * ceiling the homeostat works with. It keeps a direction while its shifts
+   * make the breathing more varied and turns when they do not, and the long
+   * averages of level and regulation lean on each step. Without pressure
+   * the offsets drift slowly home. */
+  resetMetab() {
+    this.mOsp = 0; this.mOdepth = 0; this.mOceil = 0;
+    this.mTsp = 0; this.mTdepth = 0; this.mTceil = 0;
+    this.mDir = new Float64Array([1, 1, -1]);
+    this.mP = 0; this.mReg = 0; this.mRegSlow = 0; this.mRegAtShift = 1; this.mShifts = 0;
+    this.mBreathN = 0; this.mLastBreathT = 0; this.mI = 0; this.mdI = 0; this.mPrevI = 0;
+    this.mHold = 0; this.mLev = 0; this.mStalled = false;
+    this.mTempoSet = false; this.mLS = 0; this.mLVS = 0;
+    this.spEff = this.helmT ? this.helmT[H_SET] : -20;
+  }
+
+  onBreath(t) {
+    this.mBreathN++;
+    if (this.mBreathN >= 2) {
+      const I = t - this.mLastBreathT;
+      if (this.mBreathN === 2) { this.mI = I; this.mdI = 0.15 * I; }
+      else { this.mdI += (Math.abs(I - this.mPrevI) - this.mdI) * 0.3; this.mI += (I - this.mI) * 0.3; }
+      this.mPrevI = I;
+    }
+    this.mLastBreathT = t;
+  }
+
+  metabolise(dt, sEra, loopDb, sp) {
+    const t = this.tSec, amt = this.metab;
+    const slowK = dt / (600 * sEra);
+    this.mHold += (this.clampAmt - this.mHold) * slowK;
+    this.mLev += (clamp(loopDb - sp, -30, 30) - this.mLev) * slowK;
+    const stallAfter = Math.max(4 * (this.mI || 30), 150 * sEra);
+    const stalled = t > 60 && t - this.mLastBreathT > stallAfter;
+    this.mStalled = stalled;
+    // Sameness: breaths keeping time like a clock, or a tempo that has not
+    // changed in the better part of an hour, or no breathing at all.
+    const reg = this.mBreathN >= 4 ? 1 - clamp(this.mdI / (0.5 * this.mI + 1e-6), 0, 1) : 0;
+    if (this.mI > 0) {
+      const lnI = Math.log(this.mI);
+      if (!this.mTempoSet) { this.mTempoSet = true; this.mLS = lnI; this.mLVS = lnI; }
+      this.mLS += (lnI - this.mLS) * (dt / (900 * sEra));
+      this.mLVS += (lnI - this.mLVS) * (dt / (2700 * sEra));
+    }
+    const still = this.mBreathN >= 8 && t > 1200 * sEra ? 1 - clamp(Math.abs(this.mLS - this.mLVS) / 0.4, 0, 1) : 0;
+    const same = stalled ? 1 : Math.max(reg, 0.8 * still);
+    this.mReg = same;
+    const dwell = (300 * sEra) / Math.max(0.05, amt);
+    this.mRegSlow += (same - this.mRegSlow) * (dt / (dwell * 0.5));
+    if (amt > 0 && same > 0.55) this.mP += (dt / dwell) * Math.min(2, (same - 0.55) / 0.225);
+    else this.mP = Math.max(0, this.mP - dt / (1.5 * dwell));
+    if (this.mP >= 1) this.metabShift(stalled, amt, sEra);
+    if (this.mP === 0) {
+      const k = dt / (2700 * sEra);
+      this.mTsp -= this.mTsp * k; this.mTdepth -= this.mTdepth * k; this.mTceil -= this.mTceil * k;
+    }
+    const kg = dt / (80 * sEra);
+    this.mOsp += (this.mTsp - this.mOsp) * kg;
+    this.mOdepth += (this.mTdepth - this.mOdepth) * kg;
+    this.mOceil += (this.mTceil - this.mOceil) * kg;
+  }
+
+  metabShift(stalled, amt, sEra) {
+    this.mP = 0;
+    this.mShifts++;
+    const d = this.mDir;
+    const improved = this.mRegSlow < this.mRegAtShift - 0.05;
+    this.mRegAtShift = this.mRegSlow;
+    // Where to go next is read off the eyes at this moment, so the sequence
+    // of shifts follows the system's own history and never cycles. A shift
+    // that made the breathing more varied keeps most of its direction.
+    const src = this.src;
+    let v0 = src[S_LOW] - src[S_HIGH], v1 = src[S_FLUX] + 0.5 * src[S_CLMP], v2 = src[S_CENT];
+    let nv = Math.hypot(v0, v1, v2);
+    if (nv < 0.15) { v0 = -d[2]; v1 = d[0]; v2 = d[1]; nv = Math.hypot(v0, v1, v2) || 1; }
+    const keep = improved ? 0.7 : 0;
+    for (let i = 0; i < 3; i++) d[i] = keep * d[i] + (1 - keep) * [v0, v1, v2][i] / nv;
+    const nd = Math.hypot(d[0], d[1], d[2]) || 1;
+    for (let i = 0; i < 3; i++) d[i] /= nd;
+    // A starving loop cannot reach its setpoint: bring it down, open the ceiling.
+    if (stalled && this.inhale) { d[0] = -0.8; d[2] = 0.8; }
+    // Over the long run, a bank that is rarely held gets a lower ceiling and
+    // one held hard gets a higher one.
+    const lean = [0, 0, this.mHold < 0.06 ? -0.4 : this.mHold > 0.3 ? 0.4 : 0];
+    const lo = [-6, -4, -5], hi = [6, 8, 8];
+    const T = [this.mTsp, this.mTdepth, this.mTceil];
+    for (let i = 0; i < 3; i++) {
+      const step = 3.5 * amt;
+      let v = T[i] + step * clamp(d[i] + lean[i], -1.2, 1.2);
+      if (v > hi[i] || v < lo[i]) {
+        d[i] = -d[i];
+        v = T[i] + step * clamp(d[i] + lean[i], -1.2, 1.2);
+      }
+      T[i] = clamp(v, lo[i], hi[i]);
+    }
+    this.mTsp = T[0]; this.mTdepth = T[1]; this.mTceil = T[2];
+    this.port.postMessage({
+      type: 'metab', t: this.tSec, reason: stalled ? 'stalled' : this.mReg > 0.55 && this.mBreathN >= 4 && 1 - clamp(this.mdI / (0.5 * this.mI + 1e-6), 0, 1) > 0.55 ? 'regular' : 'unchanging',
+      sp: T[0], depth: T[1], ceil: T[2], shifts: this.mShifts, interval: this.mI,
+    });
+  }
 
   /* An eye that gets used to what it sees: returns deviation from its own slow average. */
   habit(i, x, range, k) {
@@ -532,6 +711,12 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     A[H_VOL] += (T[H_VOL] - A[H_VOL]) * coef(0.08, crHz);
     const era = A[H_ERA];
     const sEra = Math.sqrt(era);
+    // The metabolism's offsets bend the homeostat's own settings.
+    const spEff = clamp(A[H_SET] + this.mOsp, -48, -3);
+    const depthEff = clamp(this.depth + this.mOdepth, 1.5, 24);
+    this.ceilEff = clamp(this.ceil + this.mOceil, 0, 24);
+    this.spEff = spEff;
+    this.tSec = this.elapsed / this.sr;
 
     // ---- the eyes ----
     const src = this.src;
@@ -541,7 +726,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     // Each eye reports a deviation, not a state: from the setpoint, or from
     // what that eye has grown used to seeing. Eyes habituate, so the system
     // responds to change, and zero means "as usual".
-    const spNow = A[H_SET];
+    const spNow = spEff;
     const kAd = coef(18 * sEra, crHz);
     src[S_CASC] = this.habit(S_CASC, Math.max(-80, dbOf(this.envCasc)), 4, kAd);
     src[S_LOOP] = clamp((loopDb - spNow) / 7, -1, 1);
@@ -552,29 +737,61 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     const benv = this.benv, post = this.post, eff = this.eff, cg = this.cg, user = this.user;
     const rot = this.md[D_ROT] * 5;
     const tilt = this.md[D_TILT];
-    const ceil = Math.pow(10, (A[H_SET] + this.ceil) / 20);
-    let lo = 0, mi = 0, hi = 0, tot = 0, cen = 0, gsum = 0, gn = 0;
+    // First pass: the carving as bent by tilt and rotation, and each band's
+    // level before its inverted VCA.
+    const lvl = this.lvl;
+    let emax = 0;
     for (let k = 0; k < NB; k++) {
       let x = k - rot;
       x = x < 0 ? 0 : x > NB - 1 ? NB - 1 : x;
       const i0 = x | 0, fr = x - i0, i1 = i0 < NB - 1 ? i0 + 1 : i0;
       const u = user[i0] + (user[i1] - user[i0]) * fr;
-      const tm = Math.pow(2, tilt * ((k - 11.5) / 11.5) * 1.6);
-      const e = u * tm;
+      const e = u * Math.pow(2, tilt * ((k - 11.5) / 11.5) * 1.6);
       eff[k] = e;
+      lvl[k] = benv[k] * e * this.carveNorm * 0.5;
+      if (e > emax) emax = e;
+    }
+    // A band is held once it rises the ceiling above an even share of the
+    // active bands, so a few bands can never hoard the whole loop.
+    let pw = 0, nact = 0;
+    for (let k = 0; k < NB; k++) if (eff[k] > emax * 0.12) { pw += lvl[k] * lvl[k]; nact++; }
+    const ceil = Math.sqrt(pw / Math.max(1, nact)) * Math.pow(10, this.ceilEff / 20) + 1e-9;
+    const kAtt = coef(0.006, crHz), kRel = coef(this.release * era, crHz);
+    let lo = 0, mi = 0, hi = 0, tot = 0, cen = 0, gsum = 0, gn = 0;
+    for (let k = 0; k < NB; k++) {
+      const e = eff[k];
       // inverted VCA: loud bands are held down, quiet ones slowly open again
-      const level = benv[k] * e * this.bankNorm * 0.5;
+      const level = lvl[k];
       let tg = 1;
       if (level > ceil) tg = Math.pow(ceil / level, this.strength);
       const c = cg[k];
-      cg[k] = c + (tg - c) * (tg < c ? coef(0.006, crHz) : coef(this.release * era, crHz));
-      const g = e * cg[k] * this.bankNorm;
+      cg[k] = c + (tg - c) * (tg < c ? kAtt : kRel);
+      const g = e * cg[k] * this.carveNorm;
       this.dbg[k] = (g - this.bg[k]) / CR;
       const p = benv[k] * g * 0.5;
       post[k] = p;
       if (k < 8) lo += p; else if (k < 16) mi += p; else hi += p;
       tot += p; cen += p * k;
-      if (u > 0.02) { gsum += -dbOf(cg[k]); gn++; }
+      if (e > emax * 0.12) { gsum += -dbOf(cg[k]); gn++; }
+    }
+    // Normalise the carved bank so its loudest point passes at unity: the
+    // carving decides which bands lead, the homeostat decides how loud.
+    if (--this.normTick <= 0) {
+      this.normTick = 8;
+      let peak = 0;
+      for (let k = 0; k < NB; k++) {
+        let re = 0, im = 0;
+        for (let j = 0; j < NB; j++) {
+          const e = eff[j];
+          if (e < 0.01) continue;
+          re += e * this.hRe[j * NB + k];
+          im += e * this.hIm[j * NB + k];
+        }
+        const mg = re * re + im * im;
+        if (mg > peak) peak = mg;
+      }
+      const target = 1 / Math.max(0.05, Math.sqrt(peak));
+      this.carveNorm += (Math.min(target, 4) - this.carveNorm) * 0.3;
     }
     // Spectral eyes watch each region's share of the whole.
     const totDb = dbOf(tot);
@@ -650,9 +867,18 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.ramp(R_DRIVE, this.drive);
 
     const tT = clamp(this.timeBase * Math.pow(2, md[D_TAPE] * 1.5), 0.01, 9);
-    this.tapeS += (tT - this.tapeS) * coef(0.3, crHz);
+    // The tape transport has inertia: delay time moves like a damped mass,
+    // and the heads never change speed abruptly or by more than 45%.
+    {
+      const dtc = 1 / crHz, w = 4.5;
+      const acc = (tT - this.tapeS) * w * w - 2 * w * this.tapeV;
+      this.tapeV = clamp(this.tapeV + acc * dtc, -0.45, 0.45);
+      this.tapeS = clamp(this.tapeS + this.tapeV * dtc, 0.01, 9);
+      const rT = clamp(this.timeBase * this.spread, 0.01, 9) / this.timeBase;
+      this.spreadS += (rT - this.spreadS) * coef(1.2, crHz);
+    }
     this.ramp(R_DL, this.tapeS * this.sr);
-    this.ramp(R_DR, clamp(this.tapeS * this.spread, 0.01, 9) * this.sr);
+    this.ramp(R_DR, clamp(this.tapeS * this.spreadS, 0.01, 9) * this.sr);
 
     const sh = this.shiftBase + md[D_SHFT] * (0.6 + Math.abs(this.shiftBase) * 0.8);
     this.ramp(R_SHL, sh);
@@ -664,24 +890,36 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     // Exhale: once it pushes past the ceiling, the gain is pulled back until
     // the loop has fallen by the breath depth, then it opens again. The
     // period is not set anywhere; it depends on how the web responds.
-    const sp = A[H_SET];
+    const sp = spEff;
     const dt = 1 / crHz;
+    if (loopDb < sp) this.dipped = true;
     if (this.inhale) {
       const below = sp - loopDb;
       this.trim += (0.4 + 2.4 * this.breath) * (1 + 0.15 * clamp(below, 0, 30)) / era * dt;
-      if (loopDb > sp + 3) { this.inhale = false; this.trimPeak = this.trim; this.breaths++; }
+      if (loopDb > sp + 3) {
+        this.inhale = false;
+        this.trimPeak = this.trim;
+        // a new breath only once the loop has come back down since the last one
+        if (this.dipped) { this.dipped = false; this.breaths++; this.onBreath(this.tSec); }
+      }
     } else {
       this.trim -= (1.2 + 5 * this.breath) * (1 + 0.35 * clamp(loopDb - sp, 0, 24)) / era * dt;
-      if (loopDb < sp - this.depth || this.trim < this.trimPeak - this.depth * 1.6) this.inhale = true;
+      if (loopDb < sp - depthEff || this.trim < this.trimPeak - depthEff * 1.6) this.inhale = true;
     }
     this.trim = clamp(this.trim, -48, 18);
+    if (this.running) this.metabolise(dt, sEra, loopDb, sp);
     const over = loopDb - (sp + 9);
     const tgF = over > 0 ? Math.pow(10, -over * 0.075) : 1;
     this.fastG += (tgF - this.fastG) * (tgF < this.fastG ? coef(0.004, crHz) : coef(0.25 * sEra, crHz));
-    const fb = clamp(this.fbBase * Math.pow(10, this.trim / 20) * this.fastG * Math.pow(2, md[D_FDBK] * 0.6), 0, 2.5);
+    // Feedback 1.0 means unity gain at the loudest band: the carved bank is
+    // already normalised, and this makes up the dry signal the smear and the
+    // crossfeed take away on every pass.
+    const smr = this.P[R_SMR];
+    const comp = 1 / ((1 - 0.75 * smr) * (1 - this.cross));
+    const fb = clamp(this.fbBase * comp * Math.pow(10, this.trim / 20) * this.fastG * Math.pow(2, md[D_FDBK] * 0.6), 0, this.fbCap);
     this.ramp(R_FB, fb);
     const ln = this.envLoop * 1.57;
-    this.loopNorm = ln > 0.03 ? Math.min(12, 1 / ln) : 12;
+    this.loopNorm = ln > 0.03 ? Math.min(6, 1 / ln) : 6;
 
     this.ramp(R_IN, A[H_INFLOW]);
     this.ramp(R_VOL, A[H_VOL]);
@@ -695,7 +933,17 @@ class KybernetesProcessor extends AudioWorkletProcessor {
 
     // ---- reels and their record heads ----
     const rspd = Math.pow(2, md[D_RSPD]);
+    const alcT = clamp(0.1 / Math.max(this.recEnv, 1e-4), 0, 2.5);
+    this.recAlc += (alcT - this.recAlc) * coef(0.25, crHz);
     for (let r = 0; r < 4; r++) {
+      const pending = this.reelWant[r];
+      this.reelFadeT[r] = pending ? 0 : 1;
+      if (pending && this.reelFade[r] < 0.002) {
+        this.reelWant[r] = null;
+        pending();
+        this.selectReel(r);
+        this.reelFade[r] = 0;
+      }
       const live = this.reelLen[r] > 0;
       this.ramp(R_RLV + r, live ? clamp(this.reelBase[r] + md[D_R1 + r] * 0.6, 0, 1.25) : 0);
       this.ramp(R_RSP + r, clamp(this.reelSpeed[r] * rspd, -6, 6));
@@ -740,6 +988,8 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     const toneK = this.toneK, cross = this.cross;
     const hL = this.hL, hR = this.hR, smear = this.smear, space = this.space;
     const reelBuf = this.reelBuf, reelLen = this.reelLen, reelPos = this.reelPos, reelW = this.reelW;
+    const kReel = coef(0.012, sr);
+    const kRecA = coef(0.01, sr), kRecR = coef(0.6, sr);
 
     for (let off = 0; off < n; off += CR) {
       this.control();
@@ -757,7 +1007,24 @@ class KybernetesProcessor extends AudioWorkletProcessor {
           if (pos >= len) pos -= len; else if (pos < 0) pos += len;
           reelPos[r] = pos;
           const i = pos | 0, f = pos - i, i1 = i + 1 >= len ? 0 : i + 1;
-          const v = (b[i] + (b[i1] - b[i]) * f) * P[R_RLV + r];
+          let v = b[i] + (b[i1] - b[i]) * f;
+          // Near the seam (the record head, or the splice of held tape) a
+          // second head half a loop away takes over, so nothing ever jumps.
+          let dist = pos - (this.reelMode[r] === 1 ? reelW[r] : 0);
+          if (dist < 0) dist += len;
+          if (dist > len * 0.5) dist -= len;
+          const win = this.reelWin[r];
+          const u = (dist < 0 ? -dist : dist) / win;
+          if (u < 1) {
+            let pb = pos + len * 0.5;
+            if (pb >= len) pb -= len;
+            const j = pb | 0, g = pb - j, j1 = j + 1 >= len ? 0 : j + 1;
+            const vb = b[j] + (b[j1] - b[j]) * g;
+            const a = u * 1.5707963267948966;
+            v = v * Math.sin(a) + vb * Math.cos(a);
+          }
+          const rf = (this.reelFade[r] += (this.reelFadeT[r] - this.reelFade[r]) * kReel);
+          v *= P[R_RLV + r] * rf;
           reelL += v * REEL_PAN_L[r];
           reelR += v * REEL_PAN_R[r];
         }
@@ -810,8 +1077,10 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         const retL = this.lastL * (1 - cross) + this.lastR * cross;
         const retR = this.lastR * (1 - cross) + this.lastL * cross;
         const inj = casc * P[R_IN] + pert + live;
-        const inL = inj + reelL * P[R_R2L] + fbG * retL;
-        const inR = inj + reelR * P[R_R2L] + fbG * retR;
+        let inL = inj + reelL * P[R_R2L] + fbG * retL;
+        let inR = inj + reelR * P[R_R2L] + fbG * retR;
+        inL = inL > 4 ? 4 : inL < -4 ? -4 : inL;
+        inR = inR > 4 ? 4 : inR < -4 ? -4 : inR;
         this.tlp += (inL - this.tlp) * toneK;
         this.trp += (inR - this.trp) * toneK;
         const tw = this.tw;
@@ -870,13 +1139,21 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         const dr = hb0 * mR + this.hpR1;
         this.hpR1 = hb1 * mR - ha1 * dr + this.hpR2;
         this.hpR2 = hb0 * mR - ha2 * dr;
+        // Look-ahead limiter: the signal is delayed by 1.5 ms while the gain
+        // eases down ahead of each peak, so limiting never snaps.
         const al = dl < 0 ? -dl : dl, ar = dr < 0 ? -dr : dr;
         const pk = al > ar ? al : ar;
-        this.limEnv = pk > this.limEnv ? pk : this.limEnv * 0.99993;
+        if (pk >= this.limEnv) { this.limEnv = pk; this.limHold = this.limN; }
+        else if (this.limHold > 0) this.limHold--;
+        else this.limEnv *= 0.99995;
         const lt = this.limEnv > 0.72 ? 0.72 / this.limEnv : 1;
-        this.limG += (lt - this.limG) * (lt < this.limG ? 0.25 : 0.0004);
-        const yl = sc(dl * this.limG * 1.15);
-        const yr = sc(dr * this.limG * 1.15);
+        this.limG += (lt - this.limG) * (lt < this.limG ? this.limAtk : 0.00025);
+        const li = this.limI;
+        const ol = this.limBufL[li], or = this.limBufR[li];
+        this.limBufL[li] = dl; this.limBufR[li] = dr;
+        this.limI = li + 1 === this.limN ? 0 : li + 1;
+        const yl = sc(ol * this.limG * 1.15);
+        const yr = sc(or * this.limG * 1.15);
         const oa = ((yl < 0 ? -yl : yl) + (yr < 0 ? -yr : yr)) * 0.5;
         this.envOut += (oa - this.envOut) * (oa > this.envOut ? eA : eR);
         this.fade += (this.fadeTarget - this.fade) * kFade;
@@ -885,14 +1162,20 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         oR[s] = yr * gOut;
 
         // --- reels: record heads take the output back into the system ---
-        const mono = this.mixMono;
+        // The record heads take the high-passed mix through an automatic
+        // level control, and the overdub gain stays below unity, so the
+        // reel -> output -> reel path can never run away.
+        const mono = (dl + dr) * 0.5;
+        const am = mono < 0 ? -mono : mono;
+        this.recEnv += (am - this.recEnv) * (am > this.recEnv ? kRecA : kRecR);
+        const recIn = mono * this.recAlc;
         for (let r = 0; r < 4; r++) {
           const rl2 = P[R_REC + r];
           if (rl2 < 0.002 || this.reelMode[r] !== 1) continue;
           const len = reelLen[r];
           const b = reelBuf[r];
           const i = reelW[r];
-          b[i] = b[i] * (1 - 0.6 * rl2) + mono * 0.85 * rl2;
+          b[i] = sc(b[i] * (1 - 0.6 * rl2) + recIn * 0.5 * rl2);
           reelW[r] = i + 1 >= len ? 0 : i + 1;
         }
         if (this.capture >= 0 && micL) {
@@ -924,11 +1207,14 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       buf[i] *= g;
       buf[buf.length - 1 - i] *= g;
     }
-    this.heldBuf[r] = buf;
-    this.heldLen[r] = buf.length;
     this.capture = -1;
     this.captureBuf = null;
-    this.selectReels();
+    this.requestReel(r, () => {
+      this.heldBuf[r] = buf;
+      this.heldLen[r] = buf.length;
+      this.heldGen[r]++;
+      this.reelPos[r] = 0;
+    });
     this.port.postMessage({ type: 'captured', reel: r, seconds: buf.length / this.sr });
   }
 
@@ -966,6 +1252,8 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         this.tapeS, this.P[R_SHL], this.clampAmt, this.src[S_FLUX], this.centHz,
         dbOf(this.envCasc), this.P[R_SMR], this.capture >= 0 ? this.capture : -1,
         this.inhale ? 1 : 0, this.breaths,
+        this.mOsp, this.mOdepth, this.mOceil, this.mP, this.mReg, this.mShifts, this.spEff,
+        this.mStalled ? 1 : 0, this.mI,
       ]),
     });
   }

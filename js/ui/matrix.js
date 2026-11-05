@@ -11,13 +11,14 @@ const SRC_GROUP_NAMES = ['Signals', 'Spectrum', 'Dynamics', 'Logic'];
 const DST_GROUP_NAMES = ['Generators', '×', 'Loop', 'Reels'];
 
 export class Matrix {
-  constructor(canvas, inspector, { sources, dests, getArch, onChange }) {
+  constructor(canvas, inspector, { sources, dests, getArch, onChange, onCommit }) {
     this.cv = canvas;
     this.ctx = canvas.getContext('2d');
     this.sources = sources;
     this.dests = dests;
     this.getArch = getArch;
     this.onChange = onChange;
+    this.onCommit = onCommit || (() => {});
     this.sel = null;
     this.hover = null;
     this.drag = null;
@@ -35,6 +36,7 @@ export class Matrix {
     for (const [i, j, v] of this.getArch().matrix) this.dense[i * nd + j] = v;
   }
   amount(i, j) { return this.dense[i * this.dests.length + j]; }
+  commit(i, j) { this.onCommit(`Pin ${this.sources[i].code} → ${this.dests[j].code}`); }
   setAmount(i, j, v) {
     const a = this.getArch();
     v = Math.max(-1, Math.min(1, Math.round(v * 100) / 100));
@@ -221,13 +223,16 @@ export class Matrix {
       if (!this.sel) return;
       this.setAmount(this.sel.i, this.sel.j, +this.iRange.value);
     });
+    this.iRange.addEventListener('change', () => { if (this.sel) this.commit(this.sel.i, this.sel.j); });
     this.iInv.addEventListener('click', () => {
       if (!this.sel) return;
       this.setAmount(this.sel.i, this.sel.j, -this.amount(this.sel.i, this.sel.j));
+      this.commit(this.sel.i, this.sel.j);
     });
     this.iRem.addEventListener('click', () => {
       if (!this.sel) return;
       this.setAmount(this.sel.i, this.sel.j, 0);
+      this.commit(this.sel.i, this.sel.j);
     });
     this.updateInspector();
   }
@@ -307,6 +312,7 @@ export class Matrix {
       this.drag = null;
       if (!d) return;
       if (!d.moved && d.start === 0) this.setAmount(d.i, d.j, d.alt ? -0.5 : 0.5);
+      if (d.moved || d.start === 0) this.commit(d.i, d.j);
       this.updateInspector();
     };
     cv.addEventListener('pointerup', end);
@@ -314,7 +320,7 @@ export class Matrix {
     cv.addEventListener('dblclick', (e) => {
       const [x, y] = pos(e);
       const c = this.cellAt(x, y);
-      if (c && this.amount(c.i, c.j)) this.setAmount(c.i, c.j, 0);
+      if (c && this.amount(c.i, c.j)) { this.setAmount(c.i, c.j, 0); this.commit(c.i, c.j); }
     });
     cv.addEventListener('contextmenu', (e) => {
       const [x, y] = pos(e);
@@ -324,6 +330,7 @@ export class Matrix {
       this.sel = c;
       const a = this.amount(c.i, c.j);
       this.setAmount(c.i, c.j, a ? -a : -0.5);
+      this.commit(c.i, c.j);
     });
     cv.addEventListener('keydown', (e) => {
       const ns = this.sources.length, nd = this.dests.length;
@@ -346,6 +353,7 @@ export class Matrix {
         e.preventDefault();
         e.stopPropagation();
         this.hover = null;
+        if (!e.key.startsWith('Arrow')) this.commit(s.i, s.j);
         this.updateInspector();
       }
     });

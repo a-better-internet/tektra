@@ -15,7 +15,9 @@ function fmtClock(s) {
 }
 
 export class Chronicle {
-  constructor(canvas, caption) {
+  constructor(canvas, caption, { onPick } = {}) {
+    this.onPick = onPick || (() => {});
+    this.hits = [];
     this.cv = canvas;
     this.ctx = canvas.getContext('2d');
     this.caption = caption;
@@ -31,6 +33,11 @@ export class Chronicle {
       this.dirty = true;
     });
     canvas.addEventListener('pointerleave', () => { this.hoverX = -1; this.dirty = true; });
+    canvas.addEventListener('click', (e) => {
+      const r = canvas.getBoundingClientRect();
+      const hit = this.hitAt(e.clientX - r.left);
+      if (hit) this.onPick(hit.id);
+    });
   }
 
   reset() {
@@ -51,9 +58,20 @@ export class Chronicle {
 
   setSpan(span) { this.span = span; this.dirty = true; }
 
-  mark(t, kind, label) {
-    this.marks.push({ t, kind, label });
+  mark(t, kind, label, id) {
+    this.marks.push({ t, kind, label, id });
     this.dirty = true;
+  }
+
+  unmark(id) {
+    this.marks = this.marks.filter((m) => m.id !== id);
+    this.dirty = true;
+  }
+
+  hitAt(x) {
+    let best = null;
+    for (const h of this.hits) if (Math.abs(h.x - x) < 8 && (!best || Math.abs(h.x - x) < Math.abs(best.x - x))) best = h;
+    return best;
   }
 
   push(frame) {
@@ -184,10 +202,28 @@ export class Chronicle {
 
     // marks
     ctx.font = `500 9px ${theme.fData}`;
+    this.hits = [];
     for (const m of this.marks) {
       if (m.t < start || m.t > start + span) continue;
       const x = ((m.t - start) / span) * W;
-      if (m.kind === 'epoch') {
+      if (m.kind === 'snap') {
+        // a snapshot: a bright flag you can click to return to it
+        ctx.fillStyle = theme['signal-hi'];
+        ctx.fillRect(Math.round(x), padT, 1.5, plotH);
+        const tw = ctx.measureText(m.label).width + 8;
+        const fx = Math.min(W - tw, Math.max(0, x - 1));
+        ctx.fillRect(fx, padT, tw, 12);
+        ctx.fillStyle = theme.void;
+        ctx.textAlign = 'left';
+        ctx.fillText(m.label, fx + 4, padT + 9);
+        this.hits.push({ x, id: m.id });
+      } else if (m.kind === 'metab') {
+        // the metabolism shifting: an open ring under the strata
+        ctx.strokeStyle = theme.signal;
+        ctx.lineWidth = 1.25;
+        ctx.beginPath(); ctx.arc(x, padT + plotH + 4.5, 3, 0, Math.PI * 2); ctx.stroke();
+        ctx.lineWidth = 1;
+      } else if (m.kind === 'epoch') {
         ctx.fillStyle = rgba(theme.ink, 0.5);
         ctx.fillRect(Math.round(x), padT, 1, plotH);
         ctx.fillStyle = theme.ink;
@@ -201,6 +237,7 @@ export class Chronicle {
       }
     }
 
+    this.cv.style.cursor = this.hoverX >= 0 && this.hitAt(this.hoverX) ? 'pointer' : 'default';
     if (this.hoverX >= 0 && this.hoverX < nowX) {
       const t = start + (this.hoverX / W) * span;
       ctx.fillStyle = rgba(theme.ink, 0.6);

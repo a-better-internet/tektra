@@ -15,8 +15,10 @@ import { Trace } from './ui/trace.js';
 import { buildArchitecture } from './ui/architect.js';
 import { EpochWatch, roman } from './epochs.js';
 import { readTheme } from './ui/theme.js';
+import { History, describe } from './history.js';
 
 const STORE_KEY = 'kybernetes.architecture.v1';
+const SNAP_KEY = 'kybernetes.snapshots.v1';
 const $ = (sel) => document.querySelector(sel);
 
 readTheme();
@@ -43,8 +45,11 @@ function save() {
 
 const engine = new Engine();
 let postPending = false;
-function changed() {
+let history = null;
+/* Every edit lands here. A finished edit (commit) becomes one undo step. */
+function changed(path, commit, label) {
   save();
+  if (commit && history) history.commit(describe(path || '', label));
   if (postPending) return;
   postPending = true;
   requestAnimationFrame(() => {
@@ -106,6 +111,7 @@ function helmCommitted(def, v) {
   const text = `Steersman · ${def.label} → ${def.format(v)}`;
   log(text, 'helm');
   chronicle.mark(elapsed, 'helm', def.label);
+  history.commit(`Helm ${def.label}`);
 }
 
 const helmGrid = $('#helm-knobs');
@@ -143,9 +149,11 @@ updateEra();
 /* ---------- the visible system ---------- */
 
 const observatory = new Observatory($('#obs-back'), $('#obs-front'), { getArch });
-const matrix = new Matrix($('#matrix'), $('#matrix-inspector'), { sources: SOURCES, dests: DESTS, getArch, onChange: changed });
-const bank = new Bank($('#bank'), $('#bank-read'), { getArch, onChange: changed });
-const chronicle = new Chronicle($('#chronicle'), $('#chronicle-cap'));
+const matrix = new Matrix($('#matrix'), $('#matrix-inspector'), {
+  sources: SOURCES, dests: DESTS, getArch, onChange: () => changed(), onCommit: (label) => history.commit(label),
+});
+const bank = new Bank($('#bank'), $('#bank-read'), { getArch, onChange: (commit) => changed('bank', commit, 'carving') });
+const chronicle = new Chronicle($('#chronicle'), $('#chronicle-cap'), { onPick: (id) => recallSnapshot(id) });
 const trace = new Trace($('#trace'));
 const watch = new EpochWatch();
 
@@ -159,18 +167,53 @@ const architecture = buildArchitecture($('#cards'), { getArch, changed, engine, 
 architecture.sync();
 $('#arch-name').textContent = arch.name;
 
+/* ---------- undo and redo ---------- */
+
+function restore(next) {
+  arch = next;
+  save();
+  engine.setArch(arch);
+  engine.setHelm(arch.helm);
+  syncAll();
+  matrix.sel = null;
+  matrix.hover = null;
+  matrix.updateInspector();
+}
+history = new History(getArch, restore);
+const undoBtn = $('#undo'), redoBtn = $('#redo');
+function refreshHistory() {
+  undoBtn.disabled = !history.canUndo;
+  redoBtn.disabled = !history.canRedo;
+  const u = history.undoLabel, r = history.redoLabel;
+  undoBtn.title = u ? `Undo ${u} (Ctrl+Z)` : 'Nothing to undo';
+  redoBtn.title = r ? `Redo ${r} (Ctrl+Shift+Z)` : 'Nothing to redo';
+  undoBtn.setAttribute('aria-label', u ? `Undo ${u}` : 'Undo');
+  redoBtn.setAttribute('aria-label', r ? `Redo ${r}` : 'Redo');
+}
+history.addEventListener('change', refreshHistory);
+function undo() {
+  const label = history.undo();
+  if (label) log(`Undo · ${label}`, 'helm');
+}
+function redo() {
+  const label = history.redo();
+  if (label) log(`Redo · ${label}`, 'helm');
+}
+undoBtn.addEventListener('click', undo);
+redoBtn.addEventListener('click', redo);
+refreshHistory();
+
 /* bank tools */
-$('#bank-flatten').addEventListener('click', () => { arch.bank.gains = arch.bank.gains.map(() => 0.6); changed(); log('Architect · bank flattened'); });
+$('#bank-flatten').addEventListener('click', () => { arch.bank.gains = arch.bank.gains.map(() => 0.6); changed('bank', true, 'flattened'); });
 $('#bank-invert').addEventListener('click', () => {
   const g = arch.bank.gains, mx = Math.max(...g), mn = Math.min(...g);
   arch.bank.gains = g.map((v) => +(mx + mn - v).toFixed(3));
-  changed();
-  log('Architect · carving inverted');
+  changed('bank', true, 'carving inverted');
 });
 $('#bank-smooth').addEventListener('click', () => {
   const g = arch.bank.gains;
   arch.bank.gains = g.map((v, k) => +((g[Math.max(0, k - 1)] + 2 * v + g[Math.min(g.length - 1, k + 1)]) / 4).toFixed(3));
-  changed();
+  changed('bank', true, 'smoothed');
 });
 
 /* chronicle span */
@@ -231,14 +274,22 @@ function perturb() {
 for (const b of perturbBtns) b.addEventListener('click', perturb);
 
 document.addEventListener('keydown', (e) => {
-  if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.defaultPrevented) return;
   const t = e.target;
+  const typing = t.closest?.('input[type="text"], textarea');
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !typing) {
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
+    if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo(); return; }
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (t.closest?.('input, select, textarea, [role="slider"], canvas')) return;
   if (e.key === ' ') {
     if (t.closest?.('button, label, a, summary')) return;
     e.preventDefault();
     engageBtn.click();
   } else if (e.key === 'p' || e.key === 'P') perturb();
+  else if (e.key === 's' || e.key === 'S') takeSnapshot();
 });
 
 /* ---------- frames from the engine ---------- */
@@ -257,6 +308,7 @@ engine.addEventListener('frame', (e) => {
     if (ev.type === 'settle') {
       chronicle.mark(ev.t, 'epoch', roman(ev.epoch));
       $('#epoch').textContent = `${roman(ev.epoch)} · ${ev.desc.colour}`;
+      currentEpoch = roman(ev.epoch);
     } else {
       $('#epoch').textContent = `${roman(ev.epoch)} → ?`;
     }
@@ -272,14 +324,30 @@ engine.addEventListener('frame', (e) => {
     architecture.update(frame);
     $('#elapsed').textContent = clock(elapsed);
     const s = frame.stat;
-    $('#trace-read').textContent = `loop ${s[0].toFixed(1)} dB · setpoint ${frame.helm[3].toFixed(1)} dB · ${s[13] > 0.5 ? 'inhaling' : 'exhaling'} · breath ${Math.round(s[14])}`;
+    const spEff = s.length > 21 ? s[21] : frame.helm[3];
+    $('#trace-read').textContent = `loop ${s[0].toFixed(1)} dB · setpoint ${spEff.toFixed(1)} dB · ${s[13] > 0.5 ? 'inhaling' : 'exhaling'} · breath ${Math.round(s[14])}`;
+    if (s.length > 21) {
+      const moved = Math.abs(s[15]) + Math.abs(s[16]) + Math.abs(s[17]) > 0.1;
+      $('#metab-read').textContent = arch.homeo.metab === 0 ? 'metabolism off'
+        : `metabolism ${moved ? `${fmt.db(s[15])} · depth ${fmt.db(s[16])} · ceiling ${fmt.db(s[17])}` : 'resting'} · pressure ${Math.round(s[18] * 100)}%`;
+    }
   }
 });
 engine.addEventListener('captured', (e) => {
   arch.reels[e.detail.reel].mode = 'tape';
   syncAll();
-  changed();
+  changed(`reels.${e.detail.reel}.mode`, true, 'capture');
   notify(`Reel ${e.detail.reel + 1} captured ${e.detail.seconds.toFixed(1)} s from the microphone.`);
+});
+const METAB_WHY = {
+  regular: 'the breathing had begun to keep time like a clock',
+  unchanging: 'the breathing had not changed its pace in a long while',
+  stalled: 'the loop had stopped breathing',
+};
+engine.addEventListener('metab', (e) => {
+  const m = e.detail;
+  log(`Metabolism shifts, because ${METAB_WHY[m.reason] || 'the breathing had settled'}. Setpoint ${fmt.db(m.sp)}, depth ${fmt.db(m.depth)}, ceiling ${fmt.db(m.ceil)}.`, 'event');
+  chronicle.mark(m.t, 'metab', 'metabolism');
 });
 
 /* ---------- drawing ---------- */
@@ -311,17 +379,12 @@ const idx = PRESETS.findIndex((p) => p.name === arch.name);
 presetSel.value = String(Math.max(0, idx));
 showPresetNote();
 
-function adopt(next, how) {
-  arch = next;
-  save();
-  engine.setArch(arch);
-  syncAll();
-  matrix.sel = null;
-  matrix.hover = null;
-  matrix.updateInspector();
+function adopt(next, how, mark = '◇') {
+  restore(next);
+  history.commit(`${how.replace(/[:]$/, '')} “${arch.name}”`);
   const live = engine.running ? ' The running system moves toward it.' : '';
   notify(`${how} “${arch.name}”.${live}`);
-  chronicle.mark(elapsed, 'epoch', '◇');
+  chronicle.mark(elapsed, 'epoch', mark);
 }
 
 $('#arch-load').addEventListener('click', () => adopt(PRESETS[+presetSel.value].build(), 'Architecture loaded:'));
@@ -374,8 +437,79 @@ $('#reset-go').addEventListener('click', () => {
   elapsed = 0;
   $('#elapsed').textContent = clock(0);
   $('#epoch').textContent = '—';
+  runId = `run-${Date.now()}`;
   log('Run reset. Tape and reel memory cleared, the clock restarted.');
 });
+
+/* ---------- snapshots ---------- */
+
+let runId = `run-${Date.now()}`;
+let currentEpoch = '';
+let snaps = [];
+try { snaps = JSON.parse(localStorage.getItem(SNAP_KEY) || '[]').filter((x) => x && x.arch); } catch { snaps = []; }
+const snapList = $('#snaps');
+const snapNote = $('#snaps-empty');
+
+function saveSnaps() {
+  try { localStorage.setItem(SNAP_KEY, JSON.stringify(snaps.slice(-40))); } catch { /* not persisted */ }
+}
+
+function renderSnaps() {
+  snapList.replaceChildren();
+  snapNote.hidden = snaps.length > 0;
+  for (const sn of [...snaps].reverse()) {
+    const li = document.createElement('li');
+    li.className = 'snap';
+    const tag = document.createElement('span');
+    tag.className = 'snap__tag';
+    tag.textContent = `S${sn.n}`;
+    const what = document.createElement('span');
+    what.className = 'snap__what';
+    const here = sn.run === runId ? `at ${clock(sn.t)}` : 'earlier run';
+    what.textContent = `${sn.arch.name} · ${here}${sn.epoch ? ` · epoch ${sn.epoch}` : ''}`;
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'btn btn--small';
+    go.textContent = 'Recall';
+    go.addEventListener('click', () => recallSnapshot(sn.id));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn btn--small btn--quiet';
+    del.textContent = 'Delete';
+    del.setAttribute('aria-label', `Delete snapshot S${sn.n}`);
+    del.addEventListener('click', () => {
+      snaps = snaps.filter((x) => x.id !== sn.id);
+      chronicle.unmark(sn.id);
+      saveSnaps();
+      renderSnaps();
+    });
+    li.append(tag, what, go, del);
+    snapList.append(li);
+  }
+}
+
+function takeSnapshot() {
+  const n = snaps.reduce((m, x) => Math.max(m, x.n), 0) + 1;
+  const sn = { id: `s${Date.now()}`, n, t: elapsed, run: runId, epoch: currentEpoch, arch: structuredClone(arch) };
+  snaps.push(sn);
+  if (snaps.length > 40) snaps.shift();
+  saveSnaps();
+  chronicle.mark(elapsed, 'snap', `S${n}`, sn.id);
+  renderSnaps();
+  notify(`Snapshot S${n} kept: “${arch.name}” and the helm as they are now.`);
+}
+
+function recallSnapshot(id) {
+  const sn = snaps.find((x) => x.id === id);
+  if (!sn) return;
+  const next = structuredClone(sn.arch);
+  next.helm.volume = arch.helm.volume;
+  adopt(next, `Recalled S${sn.n}:`, `↺S${sn.n}`);
+  log('The architecture and helm return; the system’s own memory carries on, so it finds its way back rather than jumping.');
+}
+
+for (const b of document.querySelectorAll('[data-snapshot]')) b.addEventListener('click', takeSnapshot);
+renderSnaps();
 
 /* ---------- recording ---------- */
 
