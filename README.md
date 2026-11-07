@@ -31,6 +31,7 @@ Then open <http://localhost:8000> and press **Engage**. It needs a current Chrom
 ```
 
 * **Generators (G1–G4).** Four oscillators that modulate their own phase (fold), pull toward small whole-number frequency ratios with their neighbour (coupling), and have their phase pushed by the loop's return.
+* **Glide.** Anything that changes pitch moves at the glide's pace, stretched by Era: generator pitch, tape speed (a long glide makes a heavy transport that never bends far), reel speed, frequency shift, and the bank's tilt and rotation. The default of 10 seconds makes the web drift rather than swoop. The restless presets use 1.5–2 seconds.
 * **Multiplier cascade (×1–×4).** Four ring multipliers in series. Multiplication cancels the input frequencies and leaves their sums and differences. The fourth stage multiplies by the loop's own return: multiplied feedback.
 * **The loop.** A stereo tape delay with two heads, a bank of 24 third-octave band-pass filters (63 Hz to 12.5 kHz), a single-sideband frequency shifter and a smearing reverberator, all *inside* the feedback path. Every pass is re-carved, re-pitched and smeared.
 * **Eyes.** Envelope followers read the multiplier output, loop level, output level, reel level, low, middle and high spectral share, spectral centre, rate of change and regulation pressure. They habituate: each eye reports how far things are from what it has grown used to.
@@ -67,6 +68,7 @@ The architecture is saved in the browser's local storage. Loaded sounds are not 
 * **Headroom:** how often the feedback gain sat at its ceiling, and the trim the homeostat needed.
 * **Breathing:** breaths per window, the mean interval, and how much the intervals vary. Low variation means clock-like.
 * **Metabolism:** each shift, why it happened and where it moved the setpoint, depth and ceiling.
+* **Motion:** how fast pitch, tape speed, shift, level and brightness change from one second to the next, how far each generator ranges, how many abrupt moves there were, and how far the spectrum evolves over five minutes.
 * **Clicks:** isolated sample discontinuities, each with what the engine was doing at that moment (a reel loop point, a record-head crossing, a tape lurch, the limiter, a gate). Sharp sawtooth edges from heavily folded generators are counted apart, as timbre.
 
 ```bash

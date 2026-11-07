@@ -66,11 +66,12 @@ export function buildArchitecture(root, api) {
         knob(`gens.${i}.f`, { label: 'Freq', min: 8, max: 5000, curve: 'log', format: fmt.hz, title: `Base frequency of generator ${i + 1}` }),
         knob(`gens.${i}.fold`, { label: 'Fold', min: 0, max: 2.5, format: fmt.num, title: 'Self-modulation: from sine toward a dense, unstable spectrum' }))));
   }
-  const genCard = card('gens', 'G', 'Generators', 'Four oscillators, each modulating its own phase. They pull toward small whole-number ratios with their neighbour, and the loop pushes their phase.',
+  const genCard = card('gens', 'G', 'Generators', 'Four oscillators, each modulating its own phase. They pull toward small whole-number ratios with their neighbour, and the loop pushes their phase. Glide sets how slowly pitch may move anywhere in the web.',
     gens,
     h('div', { class: 'knobs knobs--row' },
       knob('sync', { label: 'Coupling', min: 0, max: 1, format: fmt.pct, title: 'How hard neighbouring generators pull each other toward a shared ratio' }),
-      knob('pm', { label: 'Loop → phase', min: 0, max: 1, format: fmt.pct, title: 'How much the loop output pushes the generators’ phase' })));
+      knob('pm', { label: 'Loop → phase', min: 0, max: 1, format: fmt.pct, title: 'How much the loop output pushes the generators’ phase' }),
+      knob('glide', { label: 'Glide', min: 0.05, max: 60, curve: 'log', format: fmt.sec, title: 'How slowly anything that changes pitch may move: generator pitch, tape speed, reel speed, frequency shift and the bank’s sweeps (stretched by Era). Long glides drift; short ones swoop.' })));
 
   /* ---- multipliers ---- */
   const stages = [['×1', 'G1 · G2'], ['×2', '· G3'], ['×3', '· G4'], ['×4', '· loop']];

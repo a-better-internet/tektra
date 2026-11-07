@@ -7,6 +7,7 @@
  *   - breathing: how regular the homeostat's breaths were, per window
  *   - headroom:  how often the feedback gain sat at its ceiling
  *   - clicks:    sample discontinuities, with what was happening at the time
+ *   - motion:    how fast and how far pitch, tape speed, level and brightness move
  *
  *   node tools/render.mjs --seconds 120 --preset "Iron Weather" --out iron.wav
  *   node tools/render.mjs --derive andromeda --seconds 600 --out a.wav
@@ -145,6 +146,11 @@ const breathT = [];
 let fbPinned = 0, frames = 0;
 const trims = [];
 const metab = [];
+const sec = [];          // the system averaged over each second, for the motion report
+let nextSec = 1;
+let acc = { n: 0, out: 0, cent: 0 };
+const minutes = [];      // the band profile averaged over each minute, for the evolution report
+let minAcc = null, minN = 0, nextMin = 60;
 
 say(`Rendering "${arch.name}" for ${opt.seconds}s at ${SR} Hz`);
 const t0 = performance.now();
@@ -221,6 +227,21 @@ for (let b = 0; b < total; b++) {
     if (m.type !== 'frame') continue;
     lastFrame = m;
     frames++;
+    acc.n++; acc.out += m.stat[1]; acc.cent += Math.log2(Math.max(20, m.stat[9]));
+    if (!minAcc) minAcc = new Float64Array(m.bands.length + 1);
+    for (let k = 0; k < m.bands.length; k++) minAcc[k] += m.bands[k];
+    minAcc[m.bands.length] += Math.log2(Math.max(20, m.stat[9]));
+    minN++;
+    if (m.el >= nextMin) {
+      nextMin += 60;
+      minutes.push(Array.from(minAcc, (v) => v / minN));
+      minAcc.fill(0); minN = 0;
+    }
+    if (m.el >= nextSec) {
+      nextSec = Math.floor(m.el) + 1;
+      sec.push({ t: m.el, gens: Array.from(m.gens), tape: m.stat[5], shift: m.stat[6], out: acc.out / acc.n, cent: 2 ** (acc.cent / acc.n) });
+      acc = { n: 0, out: 0, cent: 0 };
+    }
     const s = m.stat;
     if (s[4] >= proc.fbCap * 0.98) fbPinned++;
     trims.push(s[2]);
@@ -267,6 +288,51 @@ console.log(`Breathing (variation is the spread of breath intervals; low means c
 if (metab.length) {
   console.log(`Metabolism shifted ${metab.length} times:`);
   for (const m of metab.slice(0, 40)) console.log(`  ${m.t.toFixed(0).padStart(6)}s  ${m.reason}: setpoint ${m.sp.toFixed(1)} dB, depth ${m.depth.toFixed(1)} dB, ceiling ${m.ceil.toFixed(1)} dB`);
+}
+
+/* Motion: rates per second and ranges, skipping the first 30 s while the web wakes. */
+{
+  const S = sec.filter((x) => x.t > 30);
+  const pct = (arr, p) => { const a = arr.slice().sort((x, y) => x - y); return a.length ? a[Math.floor(p * (a.length - 1))] : 0; };
+  const pitchRate = [], tapeBend = [], shiftRate = [], levelRate = [], brightRate = [];
+  let ranges = 0;
+  for (let g = 0; g < 4; g++) {
+    const c = S.map((x) => 1200 * Math.log2(x.gens[g]));
+    for (let i = 1; i < c.length; i++) pitchRate.push(Math.abs(c[i] - c[i - 1]));
+    ranges = Math.max(ranges, pct(c, 0.95) - pct(c, 0.05));
+  }
+  let big = 0;
+  for (let i = 1; i < S.length; i++) {
+    const dt = S[i].t - S[i - 1].t || 1;
+    tapeBend.push((100 * Math.abs(S[i].tape - S[i - 1].tape)) / dt);
+    shiftRate.push(Math.abs(S[i].shift - S[i - 1].shift) / dt);
+    const dl = Math.abs(S[i].out - S[i - 1].out) / dt;
+    const db = Math.abs(Math.log2(S[i].cent / S[i - 1].cent)) / dt;
+    levelRate.push(dl); brightRate.push(db);
+    const pr = Math.max(...[0, 1, 2, 3].map((g) => Math.abs(1200 * Math.log2(S[i].gens[g] / S[i - 1].gens[g]))));
+    if (dl > 2.5 || db > 0.25 || pr > 40 || (100 * Math.abs(S[i].tape - S[i - 1].tape)) / dt > 8) big++;
+  }
+  const lv = S.map((x) => x.out);
+  const swell = pct(lv, 0.95) - pct(lv, 0.05);
+  console.log(`Motion (one-second averages; 95th percentile of the change from second to second):`);
+  console.log(`  pitch      ${pct(pitchRate, 0.95).toFixed(1)} cents/s, widest generator range ${ranges.toFixed(0)} cents`);
+  console.log(`  tape bend  ${pct(tapeBend, 0.95).toFixed(2)}% speed change     shift ${pct(shiftRate, 0.95).toFixed(3)} Hz/s`);
+  console.log(`  level      ${pct(levelRate, 0.95).toFixed(2)} dB/s, swing ${swell.toFixed(1)} dB     brightness ${pct(brightRate, 0.95).toFixed(3)} oct/s`);
+  console.log(`  abrupt moves: ${big} (${((big / Math.max(1, S.length)) * 60).toFixed(1)} per minute)`);
+  // Evolution: how far the minute-long spectral picture moves over five minutes.
+  const M = minutes.slice(1);
+  if (M.length > 6) {
+    const nb = M[0].length - 1;
+    const moves = [];
+    for (let i = 0; i + 5 < M.length; i++) {
+      let d = 0;
+      for (let k = 0; k < nb; k++) d += Math.abs(M[i + 5][k] - M[i][k]);
+      moves.push((d / nb) * 54);
+    }
+    const cents = M.map((r) => r[nb]);
+    const drift = Math.max(...cents) - Math.min(...cents);
+    console.log(`  evolution: spectrum moves ${(moves.reduce((a, b) => a + b, 0) / moves.length).toFixed(2)} dB per band over five minutes; brightness wanders over ${drift.toFixed(2)} octaves`);
+  }
 }
 
 const near = (t) => {

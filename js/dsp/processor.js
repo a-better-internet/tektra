@@ -268,6 +268,8 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.habitSet = new Uint8Array(NSRC);
     this.mT = new Float64Array(NDST);
     this.md = new Float64Array(NDST);
+    this.mdG = new Float64Array(NDST);   // pitch-like destinations, after the glide
+    this.glide = 10;
     this.gA = new Int8Array([4, 8, 2, 3]);
     this.gB = new Int8Array([6, 9, 5, 1]);
     this.gMode = new Uint8Array(4);
@@ -320,6 +322,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       this.gFold[i] = clamp(+a.gens[i].fold || 0, 0, 2.5);
     }
     this.syncBase = clamp(+a.sync || 0, 0, 1);
+    this.glide = a.glide === undefined ? 10 : clamp(+a.glide, 0.05, 60);
     this.pmBase = clamp(+a.pm || 0, 0, 1);
     for (let i = 0; i < 4; i++) this.multBase[i] = clamp(+a.mult[i] || 0, 0, 1);
     this.drive = clamp(+a.drive || 1, 0.25, 4);
@@ -561,7 +564,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.resetMetab();
     this.hpL1 = this.hpL2 = this.hpR1 = this.hpR2 = 0; this.limEnv = 0; this.limG = 1; this.limHold = 0;
     this.limBufL.fill(0); this.limBufR.fill(0);
-    this.md.fill(0); this.gState.fill(0); this.gCmp.fill(0); this.gS.fill(0); this.habitSet.fill(0);
+    this.md.fill(0); this.mdG.fill(0); this.gState.fill(0); this.gCmp.fill(0); this.gS.fill(0); this.habitSet.fill(0);
     this.recEnv = 0; this.recAlc = 1;
     this.elapsed = 0;
     this.primeRamps();
@@ -639,7 +642,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       const k = dt / (2700 * sEra);
       this.mTsp -= this.mTsp * k; this.mTdepth -= this.mTdepth * k; this.mTceil -= this.mTceil * k;
     }
-    const kg = dt / (80 * sEra);
+    const kg = dt / (200 * sEra);
     this.mOsp += (this.mTsp - this.mOsp) * kg;
     this.mOdepth += (this.mTdepth - this.mOdepth) * kg;
     this.mOceil += (this.mTceil - this.mOceil) * kg;
@@ -670,7 +673,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     const lo = [-6, -4, -5], hi = [6, 8, 8];
     const T = [this.mTsp, this.mTdepth, this.mTceil];
     for (let i = 0; i < 3; i++) {
-      const step = 3.5 * amt;
+      const step = 2.5 * amt;
       let v = T[i] + step * clamp(d[i] + lean[i], -1.2, 1.2);
       if (v > hi[i] || v < lo[i]) {
         d[i] = -d[i];
@@ -700,7 +703,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     const T = this.helmT, A = this.helmA;
     // The helm turns slowly: the steersman nudges, the system follows.
     const eraNow = A[H_ERA];
-    const glide = 1.2 * Math.sqrt(eraNow);
+    const glide = 3 * Math.sqrt(eraNow);
     const kH = coef(glide, crHz);
     A[H_INFLOW] += (T[H_INFLOW] - A[H_INFLOW]) * kH;
     A[H_BIAS] += (T[H_BIAS] - A[H_BIAS]) * kH;
@@ -735,8 +738,8 @@ class KybernetesProcessor extends AudioWorkletProcessor {
 
     // Band energies after carving and clamping
     const benv = this.benv, post = this.post, eff = this.eff, cg = this.cg, user = this.user;
-    const rot = this.md[D_ROT] * 5;
-    const tilt = this.md[D_TILT];
+    const rot = this.mdG[D_ROT] * 5;
+    const tilt = this.mdG[D_TILT];
     // First pass: the carving as bent by tilt and rotation, and each band's
     // level before its inverted VCA.
     const lvl = this.lvl;
@@ -756,7 +759,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     let pw = 0, nact = 0;
     for (let k = 0; k < NB; k++) if (eff[k] > emax * 0.12) { pw += lvl[k] * lvl[k]; nact++; }
     const ceil = Math.sqrt(pw / Math.max(1, nact)) * Math.pow(10, this.ceilEff / 20) + 1e-9;
-    const kAtt = coef(0.006, crHz), kRel = coef(this.release * era, crHz);
+    const kAtt = coef(0.02, crHz), kRel = coef(this.release * era, crHz);
     let lo = 0, mi = 0, hi = 0, tot = 0, cen = 0, gsum = 0, gn = 0;
     for (let k = 0; k < NB; k++) {
       const e = eff[k];
@@ -808,7 +811,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     src[S_CLMP] = 2 * this.clampAmt - 1;
 
     // ---- logic gates ----
-    const kGate = coef(0.25 * sEra, crHz);
+    const kGate = coef(1.0 * sEra, crHz);
     for (let g = 0; g < 4; g++) {
       const a = src[this.gA[g]];
       const b = this.gB[g] < 0 ? this.gK[g] : src[this.gB[g]];
@@ -840,14 +843,27 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         if (w !== 0) mT[j] += w * s;
       }
     }
-    const kD = coef(0.04 * Math.pow(era, 0.6), crHz);
+    const kD = coef(0.3 * sEra, crHz);
     for (let j = 0; j < NDST; j++) md[j] += (clamp(mT[j] * coup, -2.5, 2.5) - md[j]) * kD;
+    // Anything that changes pitch moves at the glide's pace, so the web drifts
+    // rather than swoops: generator pitch, tape speed, reel speed and shift.
+    const glideS = this.glide * sEra;
+    const kG = coef(glideS, crHz);
+    const mdG = this.mdG;
+    for (let i = 0; i < 4; i++) mdG[D_P1 + i] += (md[D_P1 + i] - mdG[D_P1 + i]) * kG;
+    mdG[D_TAPE] += (md[D_TAPE] - mdG[D_TAPE]) * kG;
+    mdG[D_SHFT] += (md[D_SHFT] - mdG[D_SHFT]) * kG;
+    mdG[D_RSPD] += (md[D_RSPD] - mdG[D_RSPD]) * kG;
+    // sweeps of the bank's tilt and carving are heard like pitch, so they glide too
+    const kS = coef(glideS * 0.5, crHz);
+    mdG[D_TILT] += (md[D_TILT] - mdG[D_TILT]) * kS;
+    mdG[D_ROT] += (md[D_ROT] - mdG[D_ROT]) * kS;
 
     // ---- map to the web ----
     const drift = A[H_DRIFT] / 12;
     const P = this.P;
     for (let i = 0; i < 4; i++) {
-      const f = clamp(this.gBase[i] * Math.pow(2, drift + md[D_P1 + i] * 0.75), 4, 9000);
+      const f = clamp(this.gBase[i] * Math.pow(2, drift + mdG[D_P1 + i] * 0.4), 4, 9000);
       this.ramp(R_GF + i, f);
       this.ramp(R_FOLD + i, clamp(this.gFold[i] + md[D_FOLD] * 0.7, 0, 2.6));
     }
@@ -866,13 +882,15 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < 4; i++) this.ramp(R_D + i, clamp(this.multBase[i] + md[D_MULT] * 0.5, 0, 1));
     this.ramp(R_DRIVE, this.drive);
 
-    const tT = clamp(this.timeBase * Math.pow(2, md[D_TAPE] * 1.5), 0.01, 9);
+    const tT = clamp(this.timeBase * Math.pow(2, mdG[D_TAPE] * 1.5), 0.01, 9);
     // The tape transport has inertia: delay time moves like a damped mass,
     // and the heads never change speed abruptly or by more than 45%.
     {
-      const dtc = 1 / crHz, w = 4.5;
+      // a long glide makes a heavy transport: slower to move, never bending far
+      const dtc = 1 / crHz, w = clamp(5 / glideS, 0.1, 4.5);
+      const vmax = clamp(0.25 / glideS, 0.003, 0.45);
       const acc = (tT - this.tapeS) * w * w - 2 * w * this.tapeV;
-      this.tapeV = clamp(this.tapeV + acc * dtc, -0.45, 0.45);
+      this.tapeV = clamp(this.tapeV + acc * dtc, -vmax, vmax);
       this.tapeS = clamp(this.tapeS + this.tapeV * dtc, 0.01, 9);
       const rT = clamp(this.timeBase * this.spread, 0.01, 9) / this.timeBase;
       this.spreadS += (rT - this.spreadS) * coef(1.2, crHz);
@@ -880,7 +898,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.ramp(R_DL, this.tapeS * this.sr);
     this.ramp(R_DR, clamp(this.tapeS * this.spreadS, 0.01, 9) * this.sr);
 
-    const sh = this.shiftBase + md[D_SHFT] * (0.6 + Math.abs(this.shiftBase) * 0.8);
+    const sh = this.shiftBase + mdG[D_SHFT] * (0.6 + Math.abs(this.shiftBase) * 0.8);
     this.ramp(R_SHL, sh);
     this.ramp(R_SHR, sh * (1 - 2 * this.shiftSpread));
     this.ramp(R_SMR, clamp(this.smearBase + md[D_SMR] * 0.4, 0, 0.95));
@@ -895,7 +913,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     if (loopDb < sp) this.dipped = true;
     if (this.inhale) {
       const below = sp - loopDb;
-      this.trim += (0.4 + 2.4 * this.breath) * (1 + 0.15 * clamp(below, 0, 30)) / era * dt;
+      this.trim += (0.3 + 1.6 * this.breath) * (1 + 0.12 * clamp(below, 0, 30)) / era * dt;
       if (loopDb > sp + 3) {
         this.inhale = false;
         this.trimPeak = this.trim;
@@ -903,14 +921,14 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         if (this.dipped) { this.dipped = false; this.breaths++; this.onBreath(this.tSec); }
       }
     } else {
-      this.trim -= (1.2 + 5 * this.breath) * (1 + 0.35 * clamp(loopDb - sp, 0, 24)) / era * dt;
+      this.trim -= (0.6 + 2.6 * this.breath) * (1 + 0.2 * clamp(loopDb - sp, 0, 24)) / era * dt;
       if (loopDb < sp - depthEff || this.trim < this.trimPeak - depthEff * 1.6) this.inhale = true;
     }
     this.trim = clamp(this.trim, -48, 18);
     if (this.running) this.metabolise(dt, sEra, loopDb, sp);
     const over = loopDb - (sp + 9);
     const tgF = over > 0 ? Math.pow(10, -over * 0.075) : 1;
-    this.fastG += (tgF - this.fastG) * (tgF < this.fastG ? coef(0.004, crHz) : coef(0.25 * sEra, crHz));
+    this.fastG += (tgF - this.fastG) * (tgF < this.fastG ? coef(0.004, crHz) : coef(1.2 * sEra, crHz));
     // Feedback 1.0 means unity gain at the loudest band: the carved bank is
     // already normalised, and this makes up the dry signal the smear and the
     // crossfeed take away on every pass.
@@ -932,7 +950,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.ramp(R_OSPACE, this.outSpace);
 
     // ---- reels and their record heads ----
-    const rspd = Math.pow(2, md[D_RSPD]);
+    const rspd = Math.pow(2, mdG[D_RSPD]);
     const alcT = clamp(0.1 / Math.max(this.recEnv, 1e-4), 0, 2.5);
     this.recAlc += (alcT - this.recAlc) * coef(0.25, crHz);
     for (let r = 0; r < 4; r++) {

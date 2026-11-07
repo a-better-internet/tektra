@@ -91,22 +91,25 @@ const pin = (s, d, a) => [S[s], D[d], a];
 
 export function defaultArch() {
   return {
-    v: 2,
+    v: 3,
     name: 'Drift Nebula',
     gens: [{ f: 92.5, fold: 0.7 }, { f: 138.6, fold: 0.5 }, { f: 207.7, fold: 0.8 }, { f: 349.2, fold: 0.4 }],
     sync: 0.15,
     pm: 0.03,
+    glide: 10,
     mult: [0.9, 0.75, 0.55, 0.2],
     drive: 1.4,
-    loop: { fb: 0.9, time: 1.6, spread: 1.13, tone: 0.95, shift: 0.35, shiftSpread: 1, smear: 0.25, decay: 0.55, cross: 0.25 },
+    loop: { fb: 0.9, time: 3.3, spread: 1.27, tone: 0.95, shift: 0.2, shiftSpread: 1, smear: 0.45, decay: 0.7, cross: 0.25 },
     bank: { q: 8, gains: bumps([[4, 2.5, 0.55], [11, 2.2, 0.6], [17, 1.8, 0.65], [21.5, 1.5, 0.35]], 0.15) },
-    homeo: { ceil: 6, strength: 0.85, release: 1.6, breath: 0.4, depth: 6, metab: 1 },
+    homeo: { ceil: 6, strength: 0.8, release: 2.5, breath: 0.3, depth: 3.5, metab: 1 },
+    // Gentle by default: pitch is only nudged by slow spectral balance, never
+    // by the breath, and the strongest pins shape timbre rather than pitch.
     matrix: [
-      pin('LOW', 'P1', -0.22), pin('HIGH', 'P2', 0.18), pin('CENT', 'P3', -0.3), pin('LOOP', 'P4', 0.15),
-      pin('FLUX', 'TAPE', 0.3), pin('CLMP', 'ROT', 0.55), pin('OUT', 'SMR', -0.3), pin('MID', 'SHFT', 0.4),
-      pin('L1', 'R1', 0.6), pin('L2', 'R2', 0.6), pin('L3', 'R3', 0.5), pin('L4', 'MULT', -0.35),
-      pin('REEL', 'FOLD', 0.5), pin('CLMP', 'FDBK', -0.2), pin('LOOP', 'SYNC', 0.3), pin('HIGH', 'TILT', -0.4),
-      pin('×', 'RSPD', 0.2),
+      pin('LOW', 'P1', -0.15), pin('HIGH', 'P2', 0.12), pin('CENT', 'P3', -0.15),
+      pin('FLUX', 'TAPE', 0.12), pin('CLMP', 'ROT', 0.35), pin('OUT', 'SMR', -0.3), pin('MID', 'SHFT', 0.2),
+      pin('L1', 'R1', 0.5), pin('L2', 'R2', 0.5), pin('L3', 'R3', 0.45), pin('L4', 'MULT', -0.25),
+      pin('REEL', 'FOLD', 0.3), pin('CLMP', 'FDBK', -0.2), pin('LOOP', 'SYNC', 0.25), pin('HIGH', 'TILT', -0.2),
+      pin('×', 'RSPD', 0.1),
     ],
     gates: [
       { a: S.CENT, b: -1, mode: 'gt', h: 0.1, k: 0.2 },
@@ -124,7 +127,7 @@ export function defaultArch() {
     reelToMult: 0.25,
     liveIn: 0,
     out: { loop: 0.9, dry: 0.08, reels: 0.35, space: 0.35 },
-    helm: { inflow: 0.2, bias: 0, drift: 0, setpoint: -20, coupling: 1, era: 2, volume: 0.7 },
+    helm: { inflow: 0.2, bias: 0, drift: 0, setpoint: -20, coupling: 0.8, era: 4, volume: 0.7 },
   };
 }
 
@@ -142,8 +145,9 @@ function variant(name, description, edit) {
 }
 
 export const PRESETS = [
-  variant('Drift Nebula', 'Open fifths folded through the full cascade. Slow, wide and gently churning.', () => {}),
-  variant('Iron Weather', 'Inharmonic generators, deep multiplication and narrow bands. Metallic squalls that ring and clamp.', (a) => {
+  variant('Drift Nebula', 'Open fifths folded through the full cascade, on a long smeared tape. Slowly evolving, wide and gently churning.', () => {}),
+  variant('Iron Weather', 'Restless. Inharmonic generators, deep multiplication and narrow bands: metallic squalls that ring and clamp.', (a) => {
+    a.glide = 2;
     a.gens = [{ f: 97, fold: 0.6 }, { f: 157, fold: 0.3 }, { f: 254, fold: 0.7 }, { f: 411, fold: 0.2 }];
     a.mult = [1, 1, 0.8, 0.6];
     a.drive = 1.7;
@@ -153,7 +157,8 @@ export const PRESETS = [
     a.helm.era = 1;
     a.helm.setpoint = -22;
   }),
-  variant('Breathing Engine', 'Near-unison generators lock and unlock. A short loop and a fast homeostat give it a pulse.', (a) => {
+  variant('Breathing Engine', 'Restless. Near-unison generators lock and unlock; a short loop and a fast homeostat give it a pulse.', (a) => {
+    a.glide = 1.5;
     a.gens = [{ f: 61.7, fold: 0.9 }, { f: 62.1, fold: 0.8 }, { f: 123.9, fold: 0.7 }, { f: 186.3, fold: 1.0 }];
     a.sync = 0.55;
     a.pm = 0.15;
@@ -164,6 +169,7 @@ export const PRESETS = [
     a.helm.setpoint = -18;
   }),
   variant('Relay Choir', 'Logic gates hand the material between self-recording reels at different speeds.', (a) => {
+    a.glide = 8;
     a.reels = [
       { mode: 'self', len: 5.1, level: 0.45, speed: 1, rec: 1 },
       { mode: 'self', len: 9.7, level: 0.4, speed: 0.5, rec: 2 },
@@ -176,7 +182,8 @@ export const PRESETS = [
     a.matrix.push(pin('L4', 'R4', 0.6), pin('L1', 'RSPD', -0.4), pin('L3', 'SHFT', -0.3));
     a.helm.era = 4;
   }),
-  variant('Gas Giant', 'Very low generators, a long tape and a downward-spiralling shifter inside heavy smear.', (a) => {
+  variant('Gas Giant', 'Very low generators, a long tape and a downward-spiralling shifter inside heavy smear. The slowest.', (a) => {
+    a.glide = 20;
     a.gens = [{ f: 27.5, fold: 1.2 }, { f: 41.2, fold: 1.0 }, { f: 61.7, fold: 1.1 }, { f: 92.5, fold: 0.8 }];
     a.loop = { fb: 0.94, time: 5.5, spread: 1.09, tone: 0.45, shift: -0.9, shiftSpread: 0.15, smear: 0.75, decay: 0.8, cross: 0.35 };
     a.bank = { q: 5, gains: bumps([[3, 3, 0.9], [10, 2.5, 0.6], [15.5, 2, 0.45]], 0.12) };
@@ -186,6 +193,7 @@ export const PRESETS = [
     a.helm.setpoint = -19;
   }),
   variant('Cold Lattice', 'High, sparse and glassy. Little folding, very narrow bands, an almost still shift.', (a) => {
+    a.glide = 15;
     a.gens = [{ f: 311, fold: 0 }, { f: 466, fold: 0.05 }, { f: 698, fold: 0 }, { f: 1046, fold: 0.1 }];
     a.mult = [0.8, 0.6, 0.4, 0.25];
     a.loop = { fb: 0.92, time: 2.7, spread: 1.31, tone: 0.9, shift: 0.12, shiftSpread: 1, smear: 0.55, decay: 0.7, cross: 0.2 };
@@ -228,7 +236,7 @@ function sequence(seed) {
 
 const RATIO_SET = [1.0595, 1.125, 1.2, 1.25, 1.3333, 1.4142, 1.5, 1.6, 1.618, 1.6667, 1.75, 2, 2.414, 3];
 const SPEED_SET = [1, 0.5, -1, 2, -0.5, 0.75, 1.5, -0.75];
-const ERA_SET = [0.5, 1, 2, 2, 4, 4, 8, 16];
+const ERA_SET = [2, 4, 4, 4, 8, 8, 16];
 
 /*
  * The same name always yields the same architecture. This is a design-time
@@ -250,6 +258,7 @@ export function deriveArch(word) {
     if (f > 1800) f /= 4;
   }
   a.sync = round(range(0, 0.45));
+  a.glide = round(range(6, 18), 1);
   a.pm = round(range(0, 0.2));
   a.mult = [round(range(0.5, 1)), round(range(0.3, 1)), round(range(0.2, 0.9)), round(range(0, 0.6))];
   a.drive = round(range(1, 2.2));
@@ -268,13 +277,15 @@ export function deriveArch(word) {
   const list = [];
   for (let i = 0; i < nb; i++) list.push([range(1, 22), range(1, 4), range(0.3, 0.9)]);
   a.bank = { q: round(range(3, 11), 2), gains: bumps(list, round(range(0.05, 0.2))) };
-  a.homeo = { ceil: Math.round(range(3, 10)), strength: round(range(0.6, 1.05)), release: round(range(0.4, 3.2)), breath: round(range(0.2, 1)), depth: Math.round(range(4, 10)), metab: 1 };
+  a.homeo = { ceil: Math.round(range(3, 10)), strength: round(range(0.6, 1)), release: round(range(1, 4)), breath: round(range(0.15, 0.5)), depth: round(range(2.5, 5), 1), metab: 1 };
   const pins = new Map();
   const nPins = 11 + Math.floor(r() * 9);
   for (let i = 0; i < nPins; i++) {
     const s = Math.floor(r() * SOURCES.length);
     const d = Math.floor(r() * DESTS.length);
-    pins.set(`${s}:${d}`, [s, d, round((r() < 0.4 ? -1 : 1) * range(0.15, 0.65), 2)]);
+    // pitch pins stay gentle so derived webs drift rather than swoop
+    const top = d <= D.P4 || d === D.TAPE || d === D.RSPD ? 0.2 : 0.5;
+    pins.set(`${s}:${d}`, [s, d, round((r() < 0.4 ? -1 : 1) * range(0.1, top), 2)]);
   }
   for (let i = 0; i < 3; i++) pins.set(`${S.L1 + i}:${D.R1 + i}`, [S.L1 + i, D.R1 + i, round(range(0.4, 0.7), 2)]);
   a.matrix = [...pins.values()];
@@ -292,7 +303,7 @@ export function deriveArch(word) {
   a.reelToLoop = round(range(0.3, 0.8));
   a.reelToMult = round(range(0, 0.45));
   a.out = { loop: 0.9, dry: round(range(0.05, 0.2)), reels: round(range(0.25, 0.5)), space: round(range(0.2, 0.5)) };
-  a.helm = { inflow: round(range(0.35, 0.65)), bias: 0, drift: 0, setpoint: Math.round(range(-25, -17)), coupling: 1, era: pick(ERA_SET), volume: 0.7 };
+  a.helm = { inflow: round(range(0.15, 0.45)), bias: 0, drift: 0, setpoint: Math.round(range(-25, -17)), coupling: 0.8, era: pick(ERA_SET), volume: 0.7 };
   return a;
 }
 
@@ -314,6 +325,7 @@ export function normalizeArch(input) {
     a.gens[i] = { f: num(g.f, d.gens[i].f, 8, 5000), fold: num(g.fold, d.gens[i].fold, 0, 2.5) };
   }
   a.sync = num(input.sync, d.sync, 0, 1);
+  a.glide = num(input.glide, d.glide, 0.05, 60);
   a.pm = num(input.pm, d.pm, 0, 1);
   for (let i = 0; i < 4; i++) a.mult[i] = num(input.mult?.[i], d.mult[i], 0, 1);
   a.drive = num(input.drive, d.drive, 0.25, 4);

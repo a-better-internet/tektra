@@ -25,10 +25,17 @@ readTheme();
 
 /* ---------- the architecture ---------- */
 
+let previousArch = null;
 function loadStored() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return normalizeArch(JSON.parse(raw));
+    if (raw) {
+      const stored = JSON.parse(raw);
+      // Architectures saved before the calmer defaults are kept as a
+      // snapshot, and the instrument starts from the new default.
+      if ((stored.v || 1) < 3) { previousArch = normalizeArch(stored); return defaultArch(); }
+      return normalizeArch(stored);
+    }
   } catch { /* storage unavailable or corrupt: start from the default */ }
   return defaultArch();
 }
@@ -465,7 +472,7 @@ function renderSnaps() {
     tag.textContent = `S${sn.n}`;
     const what = document.createElement('span');
     what.className = 'snap__what';
-    const here = sn.run === runId ? `at ${clock(sn.t)}` : 'earlier run';
+    const here = sn.note || (sn.run === runId ? `at ${clock(sn.t)}` : 'earlier run');
     what.textContent = `${sn.arch.name} · ${here}${sn.epoch ? ` · epoch ${sn.epoch}` : ''}`;
     const go = document.createElement('button');
     go.type = 'button';
@@ -509,6 +516,13 @@ function recallSnapshot(id) {
 }
 
 for (const b of document.querySelectorAll('[data-snapshot]')) b.addEventListener('click', takeSnapshot);
+if (previousArch) {
+  const n = snaps.reduce((m, x) => Math.max(m, x.n), 0) + 1;
+  snaps.push({ id: `s${Date.now()}`, n, t: 0, run: 'earlier', epoch: '', note: 'before the calmer defaults', arch: previousArch });
+  saveSnaps();
+  save();
+  setTimeout(() => notify(`Kybernetes now starts calmer and evolves slowly. Your previous architecture is kept as snapshot S${n}; Recall brings it back.`), 600);
+}
 renderSnaps();
 
 /* ---------- recording ---------- */
