@@ -33,7 +33,7 @@ function loadStored() {
       const stored = JSON.parse(raw);
       // Architectures saved before the calmer defaults are kept as a
       // snapshot, and the instrument starts from the new default.
-      if ((stored.v || 1) < 3) { previousArch = normalizeArch(stored); return defaultArch(); }
+      if ((stored.v || 1) < 4) { previousArch = normalizeArch(stored); return defaultArch(); }
       return normalizeArch(stored);
     }
   } catch { /* storage unavailable or corrupt: start from the default */ }
@@ -518,10 +518,10 @@ function recallSnapshot(id) {
 for (const b of document.querySelectorAll('[data-snapshot]')) b.addEventListener('click', takeSnapshot);
 if (previousArch) {
   const n = snaps.reduce((m, x) => Math.max(m, x.n), 0) + 1;
-  snaps.push({ id: `s${Date.now()}`, n, t: 0, run: 'earlier', epoch: '', note: 'before the calmer defaults', arch: previousArch });
+  snaps.push({ id: `s${Date.now()}`, n, t: 0, run: 'earlier', epoch: '', note: 'before the steadier defaults', arch: previousArch });
   saveSnaps();
   save();
-  setTimeout(() => notify(`Kybernetes now starts calmer and evolves slowly. Your previous architecture is kept as snapshot S${n}; Recall brings it back.`), 600);
+  setTimeout(() => notify(`Kybernetes has new, steadier defaults. Your previous architecture is kept as snapshot S${n}; Recall brings it back.`), 600);
 }
 renderSnaps();
 

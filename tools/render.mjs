@@ -8,6 +8,7 @@
  *   - headroom:  how often the feedback gain sat at its ceiling
  *   - clicks:    sample discontinuities, with what was happening at the time
  *   - motion:    how fast and how far pitch, tape speed, level and brightness move
+ *   - pulse:     whether the sound throbs, and whether the throb speeds up and slows down
  *
  *   node tools/render.mjs --seconds 120 --preset "Iron Weather" --out iron.wav
  *   node tools/render.mjs --derive andromeda --seconds 600 --out a.wav
@@ -30,6 +31,7 @@
  *   --inject N       add N synthetic steps to the analysed signal (not the WAV)
  *   --hold R:HZ:SEC  put a raw sine of HZ, SEC long, on reel R (1-4) as held tape;
  *                    its ends don't line up, so its loop point is a hard seam
+ *   --env FILE       write the output envelope (100 Hz, dB) for further analysis
  *   --quiet          only print the summary
  */
 import { writeFileSync } from 'node:fs';
@@ -39,7 +41,7 @@ import { PRESETS, deriveArch, eraName, setPath } from '../js/state.js';
 const args = process.argv.slice(2);
 const opt = {
   seconds: 60, sr: 48000, preset: PRESETS[0].name, derive: null, out: null, bands: null,
-  every: 10, window: 600, at: [], set: [], hold: [], ratio: 9, inject: 0, quiet: false,
+  every: 10, window: 600, at: [], set: [], hold: [], ratio: 9, inject: 0, quiet: false, env: null,
 };
 for (let i = 0; i < args.length; i++) {
   const k = args[i].replace(/^--/, '');
@@ -94,6 +96,11 @@ const N = 128;
 const SR = opt.sr;
 const total = Math.ceil(opt.seconds * SR / N);
 const keep = opt.out ? new Int16Array(total * N * 2) : null;
+// Envelope at 100 Hz for the pulse report, and the engine's tempo-like quantities once a second.
+const ENV_HOP = Math.round(SR / 100);
+const env = new Float32Array(Math.ceil((total * N) / ENV_HOP) + 1);
+let envAcc = 0, envN = 0, envI = 0;
+const tempo = [];
 const outL = new Float32Array(N), outR = new Float32Array(N);
 const outputs = [[outL, outR]];
 const inputs = [[]];
@@ -194,8 +201,12 @@ for (let b = 0; b < total; b++) {
   if (proc.limG < 0.75) note(tSec, 'limiter working hard');
   if (Math.max(proc.P[4], proc.P[5], proc.P[6], proc.P[7]) > 1.1) note(tSec, 'sharp generator edges (fold above 1.1)');
 
+  if ((b * N) % SR < N) {
+    tempo.push({ t: b * N / SR, tape: proc.tapeS, shL: proc.P[16], shR: proc.P[17], reels: [0, 1, 2, 3].map((r) => (proc.reelLen[r] > 0 ? proc.P[27 + r] : NaN)), sync: proc.P[8], gens: [0, 1, 2, 3].map((g) => proc.P[g]) });
+  }
   for (let i = 0; i < N; i++) {
     const n = b * N + i;
+    { const mono = (outL[i] + outR[i]) * 0.5; envAcc += mono * mono; if (++envN === ENV_HOP) { env[envI++] = Math.sqrt(envAcc / ENV_HOP); envAcc = 0; envN = 0; } }
     const l = outL[i], r = outR[i];
     if (l !== l || r !== r) nanCount++;
     const al = Math.abs(l), ar = Math.abs(r);
@@ -335,6 +346,66 @@ if (metab.length) {
   }
 }
 
+/* Pulse: the dominant amplitude throb in each 10 s window and how its rate drifts. */
+{
+  const W = 1000, dbs = [];
+  const pulses = [];
+  for (let w0 = 3000; w0 + W <= envI; w0 += W) {
+    const x = new Float64Array(W);
+    let m = 0;
+    for (let i = 0; i < W; i++) { x[i] = 20 * Math.log10(env[w0 + i] + 1e-6); m += x[i]; }
+    m /= W;
+    for (let i = 0; i < W; i++) x[i] = (x[i] - m) * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (W - 1)));
+    // modulation spectrum from 0.2 to 12 Hz, 0.1 Hz resolution
+    let best = 0, bestF = 0;
+    const pw = [];
+    for (let f = 0.2; f <= 12; f += 0.1) {
+      let re = 0, im = 0;
+      for (let i = 0; i < W; i++) { const a = (2 * Math.PI * f * i) / 100; re += x[i] * Math.cos(a); im += x[i] * Math.sin(a); }
+      const p = re * re + im * im;
+      pw.push(p);
+      if (p > best) { best = p; bestF = f; }
+    }
+    const med = pw.slice().sort((a, b) => a - b)[Math.floor(pw.length / 2)];
+    pulses.push({ t: w0 / 100, f: bestF, clear: best / med, depth: Math.sqrt(best) / W });
+  }
+  const clear = pulses.filter((p) => p.clear > 25);
+  let ramps = 0, drift = [];
+  for (let i = 1; i < pulses.length; i++) {
+    const a = pulses[i - 1], b = pulses[i];
+    if (a.clear > 25 && b.clear > 25) {
+      const r = Math.abs(Math.log2(b.f / a.f));
+      drift.push(r);
+      if (r > 0.26 && r < 1.5) ramps++;
+    }
+  }
+  drift.sort((a, b) => a - b);
+  const rates = clear.map((p) => p.f).sort((a, b) => a - b);
+  console.log(`Pulse: a clear throb in ${clear.length} of ${pulses.length} ten-second windows` + (rates.length ? `, typically ${rates[Math.floor(rates.length / 2)].toFixed(1)} Hz (from ${rates[0].toFixed(1)} to ${rates[rates.length - 1].toFixed(1)})` : '') + `.`);
+  if (drift.length) console.log(`  throb rate drifts ${(100 * (2 ** drift[Math.floor(drift.length / 2)] - 1)).toFixed(0)}% between windows (median); ${ramps} windows where it sped up or slowed down by more than 20%.`);
+  const T = tempo.filter((x) => x.t > 30);
+  if (T.length > 2) {
+    const range = (arr) => { const v = arr.filter((x) => !Number.isNaN(x)); return v.length ? Math.max(...v) / Math.min(...v) : 1; };
+    const tapeR = range(T.map((x) => x.tape));
+    const reelR = Math.max(...[0, 1, 2, 3].map((r) => range(T.map((x) => Math.abs(x.reels[r])))));
+    const syncR = [Math.min(...T.map((x) => x.sync)), Math.max(...T.map((x) => x.sync))];
+    // the slowest beat between generator fundamentals: any +/- combination close to zero
+    let beatLo = Infinity, beatHi = 0;
+    const co = [];
+    for (let a = -1; a <= 1; a++) for (let b2 = -1; b2 <= 1; b2++) for (let c = -1; c <= 1; c++) for (let d = -1; d <= 1; d++) {
+      if ((a || b2 || c || d) && Math.abs(a) + Math.abs(b2) + Math.abs(c) + Math.abs(d) >= 2) co.push([a, b2, c, d]);
+    }
+    let bestCo = null, bestV = Infinity;
+    for (const k of co) { const v = Math.abs(k[0] * T[0].gens[0] + k[1] * T[0].gens[1] + k[2] * T[0].gens[2] + k[3] * T[0].gens[3]); if (v < bestV) { bestV = v; bestCo = k; } }
+    for (const x of T) { const v = Math.abs(bestCo[0] * x.gens[0] + bestCo[1] * x.gens[1] + bestCo[2] * x.gens[2] + bestCo[3] * x.gens[3]); beatLo = Math.min(beatLo, v); beatHi = Math.max(beatHi, v); }
+    const name = bestCo.map((v, i) => (v ? `${v > 0 ? '+' : '−'}G${i + 1}` : '')).join('');
+    const shL = T.map((x) => x.shL), shR = T.map((x) => x.shR);
+    const net = T.map((x) => (x.shL + x.shR) / 2);
+    console.log(`  tape period varies ×${tapeR.toFixed(2)}, reel speed ×${reelR.toFixed(2)}, coupling ${syncR[0].toFixed(3)}–${syncR[1].toFixed(3)}; slowest generator beat ${name} ranges ${beatLo.toFixed(2)}–${beatHi.toFixed(2)} Hz.`);
+    console.log(`  shift left ${Math.min(...shL).toFixed(2)} to ${Math.max(...shL).toFixed(2)} Hz, right ${Math.min(...shR).toFixed(2)} to ${Math.max(...shR).toFixed(2)} Hz; net spiral ${Math.min(...net).toFixed(2)} to ${Math.max(...net).toFixed(2)} Hz per pass.`);
+  }
+}
+
 const near = (t) => {
   const hits = new Set();
   for (const e of events) if (Math.abs(e.t - t) < 0.008) hits.add(e.kind);
@@ -362,6 +433,10 @@ if (opt.out) {
   h.write('data', 36); h.writeUInt32LE(data.length, 40);
   writeFileSync(opt.out, Buffer.concat([h, data]));
   console.log(`Wrote ${opt.out}`);
+}
+if (opt.env) {
+  writeFileSync(opt.env, Buffer.from(Float32Array.from(env.subarray(0, envI), (v) => 20 * Math.log10(v + 1e-6)).buffer));
+  console.log(`Wrote ${opt.env}`);
 }
 if (opt.bands) {
   writeFileSync(opt.bands, bandRows.join('\n'));

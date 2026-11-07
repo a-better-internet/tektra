@@ -270,6 +270,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.md = new Float64Array(NDST);
     this.mdG = new Float64Array(NDST);   // pitch-like destinations, after the glide
     this.glide = 10;
+    this.hold = 0.85;
     this.gA = new Int8Array([4, 8, 2, 3]);
     this.gB = new Int8Array([6, 9, 5, 1]);
     this.gMode = new Uint8Array(4);
@@ -323,6 +324,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     }
     this.syncBase = clamp(+a.sync || 0, 0, 1);
     this.glide = a.glide === undefined ? 10 : clamp(+a.glide, 0.05, 60);
+    this.hold = a.hold === undefined ? 0.85 : clamp(+a.hold, 0, 1);
     this.pmBase = clamp(+a.pm || 0, 0, 1);
     for (let i = 0; i < 4; i++) this.multBase[i] = clamp(+a.mult[i] || 0, 0, 1);
     this.drive = clamp(+a.drive || 1, 0.25, 4);
@@ -862,8 +864,13 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     // ---- map to the web ----
     const drift = A[H_DRIFT] / 12;
     const P = this.P;
+    // Held ratios: the generators drift together and keep their tuning relative
+    // to each other, so the beats between them hold steady instead of
+    // speeding up and slowing down. Only the unheld part moves one alone.
+    const common = (mdG[D_P1] + mdG[D_P1 + 1] + mdG[D_P1 + 2] + mdG[D_P1 + 3]) * 0.25;
     for (let i = 0; i < 4; i++) {
-      const f = clamp(this.gBase[i] * Math.pow(2, drift + mdG[D_P1 + i] * 0.4), 4, 9000);
+      const own = common + (mdG[D_P1 + i] - common) * (1 - this.hold);
+      const f = clamp(this.gBase[i] * Math.pow(2, drift + own * 0.4), 4, 9000);
       this.ramp(R_GF + i, f);
       this.ramp(R_FOLD + i, clamp(this.gFold[i] + md[D_FOLD] * 0.7, 0, 2.6));
     }
@@ -882,7 +889,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < 4; i++) this.ramp(R_D + i, clamp(this.multBase[i] + md[D_MULT] * 0.5, 0, 1));
     this.ramp(R_DRIVE, this.drive);
 
-    const tT = clamp(this.timeBase * Math.pow(2, mdG[D_TAPE] * 1.5), 0.01, 9);
+    const tT = clamp(this.timeBase * Math.pow(2, mdG[D_TAPE] * 0.6), 0.01, 9);
     // The tape transport has inertia: delay time moves like a damped mass,
     // and the heads never change speed abruptly or by more than 45%.
     {
@@ -898,7 +905,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.ramp(R_DL, this.tapeS * this.sr);
     this.ramp(R_DR, clamp(this.tapeS * this.spreadS, 0.01, 9) * this.sr);
 
-    const sh = this.shiftBase + mdG[D_SHFT] * (0.6 + Math.abs(this.shiftBase) * 0.8);
+    const sh = this.shiftBase + mdG[D_SHFT] * (0.15 + Math.abs(this.shiftBase) * 0.25);
     this.ramp(R_SHL, sh);
     this.ramp(R_SHR, sh * (1 - 2 * this.shiftSpread));
     this.ramp(R_SMR, clamp(this.smearBase + md[D_SMR] * 0.4, 0, 0.95));
@@ -950,7 +957,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.ramp(R_OSPACE, this.outSpace);
 
     // ---- reels and their record heads ----
-    const rspd = Math.pow(2, mdG[D_RSPD]);
+    const rspd = Math.pow(2, mdG[D_RSPD] * 0.4);
     const alcT = clamp(0.1 / Math.max(this.recEnv, 1e-4), 0, 2.5);
     this.recAlc += (alcT - this.recAlc) * coef(0.25, crHz);
     for (let r = 0; r < 4; r++) {
@@ -1032,7 +1039,13 @@ class KybernetesProcessor extends AudioWorkletProcessor {
           if (dist < 0) dist += len;
           if (dist > len * 0.5) dist -= len;
           const win = this.reelWin[r];
-          const u = (dist < 0 ? -dist : dist) / win;
+          let u = (dist < 0 ? -dist : dist) / win;
+          if (this.reelMode[r] === 1) {
+            // a self-recording reel also has a splice where its loop wraps,
+            // until the record head has been all the way round
+            const d0 = pos > len * 0.5 ? len - pos : pos;
+            if (d0 / win < u) u = d0 / win;
+          }
           if (u < 1) {
             let pb = pos + len * 0.5;
             if (pb >= len) pb -= len;
