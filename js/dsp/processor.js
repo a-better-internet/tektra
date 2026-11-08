@@ -22,8 +22,11 @@ const NDST = 18;
 const CR = 32;            // control period, samples
 const FRAME_BLOCKS = 12;  // analysis frame every 12 render quanta (~30 Hz)
 const TWO_PI = 2 * Math.PI;
-const MK = 1.41;          // make-up gain per multiplier stage
-const MAKEUP = 1.6;       // output make-up before the limiter
+const MK = 1.1;           // make-up gain per multiplier stage
+const MAKEUP = 1.25;      // output make-up before the limiter
+const CEIL = 0.891;       // output ceiling: -1 dBFS, enforced by the look-ahead limiter
+const GOV = 0.75;         // the output governor keeps sustained peaks below this
+const REC_FRAMES = 16384; // recorder chunk, about a third of a second
 
 // Sources (the system's eyes)
 const S_CASC = 0, S_LOOP = 1, S_OUT = 2, S_REEL = 3, S_LOW = 4, S_MID = 5,
@@ -57,6 +60,15 @@ function sc(x) {
   return x * (27 + x2) / (27 + 9 * x2);
 }
 function clamp(x, a, b) { return x < a ? a : x > b ? b : x; }
+/* Soft knee: exactly linear up to t, then rounding smoothly toward m. Used
+ * wherever the chain needs a safety bound but should not colour the sound
+ * in normal use. */
+function knee(x, t, m) {
+  if (x <= t && x >= -t) return x;
+  const a = x < 0 ? -x : x;
+  const y = t + (m - t) * sc((a - t) / (m - t));
+  return x < 0 ? -y : y;
+}
 function dbOf(x) { return 20 * Math.log10(x + 1e-7); }
 function norm(db) { const n = (db + 60) / 54; return n < 0 ? 0 : n > 1 ? 1 : n; }
 function coef(seconds, rate) { return 1 - Math.exp(-1 / Math.max(1e-6, seconds * rate)); }
@@ -135,6 +147,46 @@ class FDN4 {
   }
 }
 
+/* True-peak estimate: interpolates three points between samples with a
+ * windowed-sinc polyphase filter (4x oversampling), so the limiter sees the
+ * peaks a converter would reconstruct, not just the sample values. */
+const TP_TAPS = 12;
+const TP_H = (() => {
+  const h = new Float64Array(3 * TP_TAPS);
+  for (let p = 1; p <= 3; p++) {
+    let sum = 0;
+    for (let k = 0; k < TP_TAPS; k++) {
+      const t = k - (TP_TAPS / 2 - 1) - p / 4;
+      const sinc = t === 0 ? 1 : Math.sin(Math.PI * t) / (Math.PI * t);
+      const w = 0.5 + 0.5 * Math.cos((Math.PI * t) / (TP_TAPS / 2 + 1));
+      h[(p - 1) * TP_TAPS + k] = sinc * w;
+      sum += sinc * w;
+    }
+    for (let k = 0; k < TP_TAPS; k++) h[(p - 1) * TP_TAPS + k] /= sum;
+  }
+  return h;
+})();
+class TruePeak {
+  constructor() { this.b = new Float64Array(TP_TAPS * 2); this.i = 0; }
+  run(x) {
+    const b = this.b, i = this.i;
+    b[i] = x; b[i + TP_TAPS] = x;
+    this.i = i + 1 === TP_TAPS ? 0 : i + 1;
+    // b[this.i .. this.i + TP_TAPS) is the last TP_TAPS samples, oldest first
+    const o = this.i;
+    let pk = x < 0 ? -x : x;
+    for (let p = 0; p < 3; p++) {
+      let y = 0;
+      const hp = p * TP_TAPS;
+      for (let k = 0; k < TP_TAPS; k++) y += TP_H[hp + k] * b[o + k];
+      if (y < 0) y = -y;
+      if (y > pk) pk = y;
+    }
+    return pk;
+  }
+  clear() { this.b.fill(0); }
+}
+
 /* Allpass-pair Hilbert transformer: i and q are 90 degrees apart. */
 const HA = [0.6923878, 0.9360654322959, 0.9882295226860, 0.9987488452737].map((a) => a * a);
 const HB = [0.4021921162426, 0.8561710882420, 0.9722909545651, 0.9952884791278].map((a) => a * a);
@@ -177,6 +229,13 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.tapeR = new Float32Array(this.tapeLen);
     this.tw = 0;
     this.tlp = 0; this.trp = 0;
+    // Record-level control at the tape head: 1 ms of look-ahead lets the gain
+    // ease down before a peak is written, so the tape never saturates.
+    this.alcN = Math.max(8, Math.round(sr * 0.001));
+    this.alcL = new Float64Array(64); this.alcR = new Float64Array(64); this.alcI = 0;
+    this.alcEnv = 0; this.alcHold = 0; this.alcG = 1;
+    this.alcAtk = 1 - Math.exp(-7 / this.alcN);
+    this.alcG1 = 1;
     this.tapeS = 1; this.tapeV = 0; this.spreadS = 1.1;
 
     // Reels: a self-recording buffer and a held-material buffer each
@@ -201,6 +260,13 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.reelFadeT = new Float64Array(4).fill(1);
     this.reelWin = new Float64Array(4).fill(sr * 0.04);
     this.reelSig = ['', '', '', ''];
+    this.reelStop = new Float64Array(4).fill(-1);   // where recording last stopped
+    this.reelWrap = new Float64Array(4);            // what is left of a splice at the wrap point
+    this.reelSelfPrev = new Int32Array(4);          // the loop length the tape was recorded at
+    this.reelU = new Float64Array(4).fill(1);       // each head's distance from a seam, as played
+    this.reelUb = new Float64Array(4).fill(1);
+    this.reelSince = new Float64Array(4);
+    this.reelWas = new Uint8Array(4);
 
     // Generators
     this.ph = new Float64Array([0, 0.25, 0.5, 0.75]);
@@ -254,9 +320,16 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       this.hpA2 = (1 - al) / a0;
     }
     this.limEnv = 0; this.limG = 1; this.limHold = 0;
+    this.govEnv = 0; this.govG = 1;
+    this.cmpEnv = 0; this.cmpG = 1; this.cmpT = 1;
+    this.cascEnv = 0.25; this.cascG = 1; this.cascT = 1;
+    this.lvlEnv = 0; this.lvlRef = 0; this.lvlG = 1; this.lvlT = 1;
+    this.tpL = new TruePeak(); this.tpR = new TruePeak();
+    this.recOn = false; this.recBuf = null; this.recW = 0;
     this.limN = Math.max(16, Math.round(sr * 0.0015));
     this.limBufL = new Float32Array(this.limN); this.limBufR = new Float32Array(this.limN); this.limI = 0;
-    this.limAtk = 1 - Math.exp(-4 / this.limN);
+    this.limAtk = 1 - Math.exp(-7 / this.limN);
+    this.limG1 = 1;
 
     // Perturbation (the steersman's strike)
     this.pertOn = false; this.pertT = 0; this.pertPh = 0; this.pertA = 0;
@@ -488,7 +561,18 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.reelSig[r] = this.reelSignature(r);
     {
       const m = this.reelMode[r];
-      if (m === 1) { this.reelBuf[r] = this.selfBuf[r]; this.reelLen[r] = this.reelSelfLen[r]; }
+      if (m === 1) {
+        this.reelBuf[r] = this.selfBuf[r]; this.reelLen[r] = this.reelSelfLen[r];
+        // Recording runs straight across the wrap point, so normally it is no
+        // splice at all. A new loop length makes one there (and, if longer,
+        // where the old loop ended) until recording has worn it away.
+        const was = this.reelSelfPrev[r], len = this.reelLen[r];
+        if (was > 0 && was !== len) {
+          this.reelWrap[r] = Math.LN10 * len;
+          if (len > was && this.reelStop[r] < 0) { this.reelStop[r] = was; this.reelSince[r] = 0; }
+        }
+        this.reelSelfPrev[r] = len;
+      }
       else if (m === 2 && this.heldBuf[r]) { this.reelBuf[r] = this.heldBuf[r]; this.reelLen[r] = this.heldLen[r]; }
       else { this.reelBuf[r] = null; this.reelLen[r] = 0; }
       const len = this.reelLen[r];
@@ -515,6 +599,19 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         this.pertA = clamp(+m.amount || 0.9, 0, 2);
         break;
       case 'reset': this.resetState(); break;
+      case 'rec-start':
+        this.recBuf = new Float32Array(REC_FRAMES * 2);
+        this.recW = 0;
+        this.recOn = true;
+        break;
+      case 'rec-stop':
+        if (this.recOn) {
+          this.recOn = false;
+          this.flushRec();
+          this.recBuf = null;
+          this.port.postMessage({ type: 'rec-end' });
+        }
+        break;
       case 'reel-load': {
         const r = m.reel | 0;
         if (r < 0 || r > 3 || !(m.data instanceof Float32Array)) break;
@@ -533,6 +630,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         if (r < 0 || r > 3) break;
         this.requestReel(r, () => {
           this.selfBuf[r].fill(0);
+          this.reelWrap[r] = 0; this.reelStop[r] = -1;
           this.heldBuf[r] = null; this.heldLen[r] = 0; this.heldGen[r]++;
         });
         break;
@@ -553,7 +651,9 @@ class KybernetesProcessor extends AudioWorkletProcessor {
 
   resetState() {
     this.tapeL.fill(0); this.tapeR.fill(0); this.tw = 0; this.tlp = this.trp = 0;
+    this.alcL.fill(0); this.alcR.fill(0); this.alcEnv = 0; this.alcHold = 0; this.alcG = 1; this.alcG1 = 1;
     for (let r = 0; r < 4; r++) { this.selfBuf[r].fill(0); this.reelPos[r] = 0; this.reelW[r] = 0; this.reelRecS[r] = 0; }
+    this.reelStop.fill(-1); this.reelWrap.fill(0);
     this.ph.set([0, 0.25, 0.5, 0.75]); this.gy.fill(0); this.gy2.fill(0);
     this.zl1.fill(0); this.zl2.fill(0); this.zr1.fill(0); this.zr2.fill(0);
     this.benv.fill(0); this.cg.fill(1);
@@ -565,7 +665,11 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.inhale = true; this.trimPeak = 0; this.breaths = 0; this.dipped = true;
     this.resetMetab();
     this.hpL1 = this.hpL2 = this.hpR1 = this.hpR2 = 0; this.limEnv = 0; this.limG = 1; this.limHold = 0;
-    this.limBufL.fill(0); this.limBufR.fill(0);
+    this.limBufL.fill(0); this.limBufR.fill(0); this.limG1 = 1;
+    this.govEnv = 0; this.govG = 1; this.tpL.clear(); this.tpR.clear();
+    this.cmpEnv = 0; this.cmpG = 1; this.cmpT = 1;
+    this.cascEnv = 0.25; this.cascG = 1; this.cascT = 1;
+    this.lvlEnv = 0; this.lvlRef = 0; this.lvlG = 1; this.lvlT = 1;
     this.md.fill(0); this.mdG.fill(0); this.gState.fill(0); this.gCmp.fill(0); this.gS.fill(0); this.habitSet.fill(0);
     this.recEnv = 0; this.recAlc = 1;
     this.elapsed = 0;
@@ -940,7 +1044,8 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     // already normalised, and this makes up the dry signal the smear and the
     // crossfeed take away on every pass.
     const smr = this.P[R_SMR];
-    const comp = 1 / ((1 - 0.75 * smr) * (1 - this.cross));
+    // (capped: a long smear gives back much of what it takes)
+    const comp = Math.min(2, 1 / ((1 - 0.75 * smr) * (1 - this.cross)));
     const fb = clamp(this.fbBase * comp * Math.pow(10, this.trim / 20) * this.fastG * Math.pow(2, md[D_FDBK] * 0.6), 0, this.fbCap);
     this.ramp(R_FB, fb);
     const ln = this.envLoop * 1.57;
@@ -978,6 +1083,19 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       this.ramp(R_REC + r, this.reelRecS[r]);
     }
 
+    // ---- cascade level: average 0.28 before Drive, lifting a quiet cascade
+    // by no more than 6 dB so a web keeps its own balance ----
+    this.cascT = clamp(0.28 / Math.max(this.cascEnv, 1e-4), 0.25, 2);
+    // ---- loop peak compressor target ----
+    this.cmpT = this.cmpEnv > 0.5 ? Math.pow(0.5 / this.cmpEnv, 2 / 3) : 1;
+    // ---- output leveler: 2:1 around the last minute's level, at most 6 dB ----
+    if (this.lvlRef > 0) {
+      this.lvlRef += (this.lvlEnv - this.lvlRef) * coef(60, crHz);
+      this.lvlT = clamp(Math.sqrt(this.lvlRef / Math.max(this.lvlEnv, 1e-6)), 0.5, 2);
+    } else if (this.lvlEnv > 1e-4) {
+      this.lvlRef = this.lvlEnv;
+    }
+
     // ---- guard ----
     if (!isFinite(this.lastL) || !isFinite(this.lastR) || !isFinite(this.smear.outL) || !isFinite(this.trim)) {
       this.resetState();
@@ -985,6 +1103,34 @@ class KybernetesProcessor extends AudioWorkletProcessor {
   }
 
   /* ---------- audio rate ---------- */
+
+  /* How far a reel head at pos is from the nearest seam, in crossfade
+     windows (1 = clear). Seams: the record head of a self loop or the
+     splice of held tape; for a self loop also the place recording last
+     stopped, until the record head has been all the way round, and the wrap
+     point after the loop length changes. */
+  seamU(r, pos, len) {
+    const win = this.reelWin[r];
+    const self = this.reelMode[r] === 1;
+    let d = pos - (self ? this.reelW[r] : 0);
+    if (d < 0) d += len;
+    if (d > len * 0.5) d = len - d;
+    let u = d / win;
+    if (self) {
+      if (this.reelWrap[r] > 0) {
+        const d0 = pos > len * 0.5 ? len - pos : pos;
+        if (d0 / win < u) u = d0 / win;
+      }
+      const st = this.reelStop[r];
+      if (st >= 0) {
+        let d1 = pos - st;
+        if (d1 < 0) d1 += len;
+        if (d1 > len * 0.5) d1 = len - d1;
+        if (d1 / win < u) u = d1 / win;
+      }
+    }
+    return u < 1 ? u : 1;
+  }
 
   process(inputs, outputs) {
     const out = outputs[0];
@@ -1014,6 +1160,10 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     const hL = this.hL, hR = this.hR, smear = this.smear, space = this.space;
     const reelBuf = this.reelBuf, reelLen = this.reelLen, reelPos = this.reelPos, reelW = this.reelW;
     const kReel = coef(0.012, sr);
+    const kGovA = coef(0.3, sr), kGovR = coef(20, sr), kGovDown = coef(3, sr), kGovUp = coef(30, sr);
+    const kCmpA = coef(0.002, sr), kCmpR = coef(0.25, sr), kCmpGA = coef(0.006, sr), kCmpGR = coef(0.35, sr);
+    const kLevA = coef(0.3, sr), kLevR = coef(1.5, sr), kLevG = coef(0.5, sr);
+    const kAgcA = coef(0.05, sr), kAgcR = coef(0.5, sr), kAgcG = coef(0.3, sr);
     const kRecA = coef(0.01, sr), kRecR = coef(0.6, sr);
 
     for (let off = 0; off < n; off += CR) {
@@ -1033,27 +1183,30 @@ class KybernetesProcessor extends AudioWorkletProcessor {
           reelPos[r] = pos;
           const i = pos | 0, f = pos - i, i1 = i + 1 >= len ? 0 : i + 1;
           let v = b[i] + (b[i1] - b[i]) * f;
-          // Near the seam (the record head, or the splice of held tape) a
-          // second head half a loop away takes over, so nothing ever jumps.
-          let dist = pos - (this.reelMode[r] === 1 ? reelW[r] : 0);
-          if (dist < 0) dist += len;
-          if (dist > len * 0.5) dist -= len;
-          const win = this.reelWin[r];
-          let u = (dist < 0 ? -dist : dist) / win;
-          if (this.reelMode[r] === 1) {
-            // a self-recording reel also has a splice where its loop wraps,
-            // until the record head has been all the way round
-            const d0 = pos > len * 0.5 ? len - pos : pos;
-            if (d0 / win < u) u = d0 / win;
-          }
+          // Near a seam (the record head, or a splice) a second head half a
+          // loop away takes over, so nothing ever jumps.
+          // A seam can vanish at once (a newer stop replaces an older one, or
+          // recording finally wears a splice away); let go of it only at the
+          // pace a head would move away from it.
+          const step = 1 / this.reelWin[r];
+          let u = this.seamU(r, pos, len);
+          if (u > this.reelU[r] + step) u = this.reelU[r] + step;
+          this.reelU[r] = u;
           if (u < 1) {
             let pb = pos + len * 0.5;
             if (pb >= len) pb -= len;
             const j = pb | 0, g = pb - j, j1 = j + 1 >= len ? 0 : j + 1;
             const vb = b[j] + (b[j1] - b[j]) * g;
-            const a = u * 1.5707963267948966;
+            // Two seams can lie half a loop apart (a reversed reel meets its
+            // wrap just as the record head passes the far side). If the second
+            // head is near one too, lean back on the first. The blend moves no
+            // faster than the heads do, so it never jumps itself.
+            let ub = this.seamU(r, pb, len);
+            if (ub > this.reelUb[r] + step) ub = this.reelUb[r] + step;
+            this.reelUb[r] = ub;
+            const a = (1 - (1 - u) * ub) * 1.5707963267948966;
             v = v * Math.sin(a) + vb * Math.cos(a);
-          }
+          } else this.reelUb[r] = 1;
           const rf = (this.reelFade[r] += (this.reelFadeT[r] - this.reelFade[r]) * kReel);
           v *= P[R_RLV + r] * rf;
           reelL += v * REEL_PAN_L[r];
@@ -1087,7 +1240,15 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         x += P[R_D + 2] * (x * y3 * MK - x);
         const m4 = sc(loopMono * this.loopNorm);
         x += P[R_D + 3] * (x * m4 * MK - x);
-        const casc = sc(x * P[R_DRIVE]);
+        // The cascade's level rides an automatic gain control (tenths of a
+        // second), so wandering products feed the loop at a steady level;
+        // Drive then sets how hard that level presses into the soft knee.
+        {
+          const ax = x < 0 ? -x : x;
+          this.cascEnv += (ax - this.cascEnv) * (ax > this.cascEnv ? kAgcA : kAgcR);
+          this.cascG += (this.cascT - this.cascG) * kAgcG;
+        }
+        const casc = knee(x * this.cascG * P[R_DRIVE], 1, 2);
         const ca = casc < 0 ? -casc : casc;
         this.envCasc += (ca - this.envCasc) * (ca > this.envCasc ? eA : eR);
 
@@ -1115,8 +1276,22 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         this.tlp += (inL - this.tlp) * toneK;
         this.trp += (inR - this.trp) * toneK;
         const tw = this.tw;
-        tapeL[tw] = sc(this.tlp);
-        tapeR[tw] = sc(this.trp);
+        {
+          const ai = this.alcI, an = this.alcN;
+          this.alcL[ai] = this.tlp; this.alcR[ai] = this.trp;
+          const pl = this.tlp < 0 ? -this.tlp : this.tlp, pr = this.trp < 0 ? -this.trp : this.trp;
+          const pk = pl > pr ? pl : pr;
+          if (pk >= this.alcEnv) { this.alcEnv = pk; this.alcHold = an; }
+          else if (this.alcHold > 0) this.alcHold--;
+          else this.alcEnv *= 0.99996;
+          const ag = this.alcEnv > 1.5 ? 1.5 / this.alcEnv : 1;
+          this.alcG1 += (ag - this.alcG1) * (ag < this.alcG1 ? this.alcAtk : 0.0002);
+          this.alcG += (this.alcG1 - this.alcG) * (this.alcG1 < this.alcG ? this.alcAtk : 0.0002);
+          const j = (ai + 64 - an) & 63;
+          tapeL[tw] = knee(this.alcL[j] * this.alcG, 1.7, 3);
+          tapeR[tw] = knee(this.alcR[j] * this.alcG, 1.7, 3);
+          this.alcI = (ai + 1) & 63;
+        }
         const rl = readH(tapeL, tapeLen, tw - P[R_DL]);
         const rr = readH(tapeR, tapeLen, tw - P[R_DR]);
         this.tw = tw + 1 >= tapeLen ? 0 : tw + 1;
@@ -1149,8 +1324,17 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         // --- smear ---
         smear.run(fL, fR);
         const w = P[R_SMR];
-        const xL = sc(fL + w * (smear.outL - fL));
-        const xR = sc(fR + w * (smear.outR - fR));
+        // Loop peak compressor: 3:1 above 0.5, riding the gain over
+        // milliseconds rather than bending the waveform.
+        const vL = fL + w * (smear.outL - fL), vR = fR + w * (smear.outR - fR);
+        {
+          const al = vL < 0 ? -vL : vL, ar = vR < 0 ? -vR : vR;
+          const a = al > ar ? al : ar;
+          this.cmpEnv += (a - this.cmpEnv) * (a > this.cmpEnv ? kCmpA : kCmpR);
+          this.cmpG += (this.cmpT - this.cmpG) * (this.cmpT < this.cmpG ? kCmpGA : kCmpGR);
+        }
+        const xL = knee(vL * this.cmpG, 1, 2);
+        const xR = knee(vR * this.cmpG, 1, 2);
         this.lastL = xL; this.lastR = xR;
         const la = ((xL < 0 ? -xL : xL) + (xR < 0 ? -xR : xR)) * 0.5;
         this.envLoop += (la - this.envLoop) * (la > this.envLoop ? eA : eR);
@@ -1170,27 +1354,55 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         const dr = hb0 * mR + this.hpR1;
         this.hpR1 = hb1 * mR - ha1 * dr + this.hpR2;
         this.hpR2 = hb0 * mR - ha2 * dr;
+        // Output leveler: evens out swells within a minute, leaves slow evolution.
+        {
+          const m = ((dl < 0 ? -dl : dl) + (dr < 0 ? -dr : dr)) * 0.5;
+          this.lvlEnv += (m - this.lvlEnv) * (m > this.lvlEnv ? kLevA : kLevR);
+          this.lvlG += (this.lvlT - this.lvlG) * kLevG;
+        }
+        // Output governor: if peaks run persistently hot it lowers the mix over
+        // seconds and lets it back up over half a minute, so the limiter only
+        // ever has transients to catch.
+        {
+          const ql = (dl < 0 ? -dl : dl) * this.lvlG, qr = (dr < 0 ? -dr : dr) * this.lvlG;
+          const q = ql > qr ? ql : qr;
+          this.govEnv += q > this.govEnv ? (q - this.govEnv) * kGovA : -this.govEnv * kGovR;
+          const gt = this.govEnv > GOV ? GOV / this.govEnv : 1;
+          this.govG += (gt - this.govG) * (gt < this.govG ? kGovDown : kGovUp);
+        }
+        const gl = dl * this.lvlG * this.govG, gr = dr * this.lvlG * this.govG;
         // Look-ahead limiter: the signal is delayed by 1.5 ms while the gain
         // eases down ahead of each peak, so limiting never snaps.
-        const al = dl < 0 ? -dl : dl, ar = dr < 0 ? -dr : dr;
+        const al = this.tpL.run(gl), ar = this.tpR.run(gr);
         const pk = al > ar ? al : ar;
         if (pk >= this.limEnv) { this.limEnv = pk; this.limHold = this.limN; }
         else if (this.limHold > 0) this.limHold--;
-        else this.limEnv *= 0.99995;
-        const lt = this.limEnv > 0.72 ? 0.72 / this.limEnv : 1;
-        this.limG += (lt - this.limG) * (lt < this.limG ? this.limAtk : 0.00025);
+        else this.limEnv *= 0.99998;
+        const lt = this.limEnv > CEIL ? CEIL / this.limEnv : 1;
+        // two smoothing stages: every gain change starts and ends with zero slope
+        this.limG1 += (lt - this.limG1) * (lt < this.limG1 ? this.limAtk : 0.0001);
+        this.limG += (this.limG1 - this.limG) * (this.limG1 < this.limG ? this.limAtk : 0.0001);
         const li = this.limI;
         const ol = this.limBufL[li], or = this.limBufR[li];
-        this.limBufL[li] = dl; this.limBufR[li] = dr;
+        this.limBufL[li] = gl; this.limBufR[li] = gr;
         this.limI = li + 1 === this.limN ? 0 : li + 1;
-        const yl = sc(ol * this.limG * 1.15);
-        const yr = sc(or * this.limG * 1.15);
+        // AUDIT-FINAL
+        // linear below the ceiling; the knee only catches the limiter's residual overshoot
+        const yl = knee(ol * this.limG, CEIL, 0.98);
+        const yr = knee(or * this.limG, CEIL, 0.98);
         const oa = ((yl < 0 ? -yl : yl) + (yr < 0 ? -yr : yr)) * 0.5;
         this.envOut += (oa - this.envOut) * (oa > this.envOut ? eA : eR);
         this.fade += (this.fadeTarget - this.fade) * kFade;
         const gOut = P[R_VOL] * this.fade;
         oL[s] = yl * gOut;
         oR[s] = yr * gOut;
+        // The recorder takes the finished signal before the listening level.
+        if (this.recOn) {
+          const rb = this.recBuf;
+          rb[this.recW++] = yl * this.fade;
+          rb[this.recW++] = yr * this.fade;
+          if (this.recW >= rb.length) this.flushRec();
+        }
 
         // --- reels: record heads take the output back into the system ---
         // The record heads take the high-passed mix through an automatic
@@ -1202,8 +1414,17 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         const recIn = mono * this.recAlc;
         for (let r = 0; r < 4; r++) {
           const rl2 = P[R_REC + r];
-          if (rl2 < 0.002 || this.reelMode[r] !== 1) continue;
+          const live = rl2 >= 0.002 && reelBuf[r] === this.selfBuf[r];
+          if (!live) {
+            // recording stopped: remember where, so playback can cross it smoothly
+            if (this.reelWas[r]) { this.reelWas[r] = 0; this.reelStop[r] = reelW[r]; this.reelSince[r] = 0; }
+            continue;
+          }
+          this.reelWas[r] = 1;
+          // each pass keeps 1 - 0.6 * level of what was there; count down to -20 dB
+          if (this.reelWrap[r] > 0) this.reelWrap[r] += Math.log(1 - 0.6 * rl2);
           const len = reelLen[r];
+          if (this.reelStop[r] >= 0 && ++this.reelSince[r] > len) this.reelStop[r] = -1;
           const b = reelBuf[r];
           const i = reelW[r];
           b[i] = sc(b[i] * (1 - 0.6 * rl2) + recIn * 0.5 * rl2);
@@ -1227,6 +1448,15 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       this.postFrame();
     }
     return true;
+  }
+
+  /* Hand a chunk of the recording to the page and start a fresh one. */
+  flushRec() {
+    if (!this.recBuf || this.recW === 0) return;
+    const data = this.recW === this.recBuf.length ? this.recBuf : this.recBuf.slice(0, this.recW);
+    this.port.postMessage({ type: 'rec', data }, [data.buffer]);
+    this.recBuf = this.recOn ? new Float32Array(REC_FRAMES * 2) : null;
+    this.recW = 0;
   }
 
   finishCapture() {

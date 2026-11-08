@@ -9,6 +9,8 @@
  *   - clicks:    sample discontinuities, with what was happening at the time
  *   - motion:    how fast and how far pitch, tape speed, level and brightness move
  *   - pulse:     whether the sound throbs, and whether the throb speeds up and slows down
+ *   - levels:    sample and true peak of the output, and how hard the limiter,
+ *                output governor and tape level control had to work
  *
  *   node tools/render.mjs --seconds 120 --preset "Iron Weather" --out iron.wav
  *   node tools/render.mjs --derive andromeda --seconds 600 --out a.wav
@@ -20,7 +22,7 @@
  *   --sr N           sample rate (default 48000)
  *   --preset NAME    start from a preset (default: the first one)
  *   --derive WORD    start from an architecture derived from WORD
- *   --out FILE       write a 16-bit stereo WAV
+ *   --out FILE       write a 24-bit stereo WAV (streamed; past 4 GB it continues in FILE-part2.wav ...)
  *   --bands FILE     write the band history (one JSON row per frame)
  *   --every N        print a status line every N seconds (default 10)
  *   --window N       breathing report window in seconds (default 600)
@@ -34,7 +36,7 @@
  *   --env FILE       write the output envelope (100 Hz, dB) for further analysis
  *   --quiet          only print the summary
  */
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, openSync, writeSync, closeSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { PRESETS, deriveArch, eraName, setPath } from '../js/state.js';
 
@@ -95,12 +97,65 @@ const steer = opt.at.map((s) => {
 const N = 128;
 const SR = opt.sr;
 const total = Math.ceil(opt.seconds * SR / N);
-const keep = opt.out ? new Int16Array(total * N * 2) : null;
+/* 24-bit WAV, streamed to disk so long renders never sit in memory. */
+const wav = opt.out ? (() => {
+  const MAX = 3_900_000_000;
+  const w = { part: 1, fd: null, bytes: 0, buf: Buffer.alloc(SR * 6), fill: 0, paths: [] };
+  const header = (dataBytes) => {
+    const h = Buffer.alloc(44);
+    h.write('RIFF', 0); h.writeUInt32LE(36 + dataBytes, 4); h.write('WAVE', 8);
+    h.write('fmt ', 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(2, 22);
+    h.writeUInt32LE(SR, 24); h.writeUInt32LE(SR * 6, 28); h.writeUInt16LE(6, 32); h.writeUInt16LE(24, 34);
+    h.write('data', 36); h.writeUInt32LE(dataBytes, 40);
+    return h;
+  };
+  w.open = () => {
+    const path = w.part === 1 ? opt.out : opt.out.replace(/(\.wav)?$/i, `-part${w.part}.wav`);
+    w.fd = openSync(path, 'w');
+    writeSync(w.fd, header(0));
+    w.bytes = 0;
+    w.paths.push(path);
+  };
+  w.flush = () => {
+    if (!w.fill) return;
+    writeSync(w.fd, w.buf, 0, w.fill);
+    w.bytes += w.fill;
+    w.fill = 0;
+  };
+  w.close = () => {
+    w.flush();
+    writeSync(w.fd, header(w.bytes), 0, 44, 0);
+    closeSync(w.fd);
+  };
+  w.frame = (l, r) => {
+    if (w.fill + 6 > w.buf.length) w.flush();
+    if (w.bytes + w.fill + 6 > MAX) { w.close(); w.part++; w.open(); }
+    for (const v of [l, r]) {
+      const q = Math.max(-8388608, Math.min(8388607, Math.round(Math.max(-1, Math.min(1, v)) * 8388607)));
+      w.buf[w.fill++] = q & 255; w.buf[w.fill++] = (q >> 8) & 255; w.buf[w.fill++] = (q >> 16) & 255;
+    }
+  };
+  w.open();
+  return w;
+})() : null;
 // Envelope at 100 Hz for the pulse report, and the engine's tempo-like quantities once a second.
 const ENV_HOP = Math.round(SR / 100);
 const env = new Float32Array(Math.ceil((total * N) / ENV_HOP) + 1);
 let envAcc = 0, envN = 0, envI = 0;
 const tempo = [];
+// Levels: true peak by 4x windowed-sinc interpolation (as the engine's limiter detects it).
+const TPH = (() => {
+  const T = 16, h = [];
+  for (let p = 1; p <= 3; p++) {
+    const row = []; let sum = 0;
+    for (let k = 0; k < T; k++) { const t = k - (T / 2 - 1) - p / 4; const v = (t === 0 ? 1 : Math.sin(Math.PI * t) / (Math.PI * t)) * (0.5 + 0.5 * Math.cos((Math.PI * t) / (T / 2 + 1))); row.push(v); sum += v; }
+    h.push(row.map((v) => v / sum));
+  }
+  return h;
+})();
+const tpHist = [new Float64Array(32), new Float64Array(32)];
+let tpI = 0, truePeak = 0, samplePeak = 0;
+const lev = { n: 0, lim1: 0, lim3: 0, gov1: 0, gov3: 0, alc1: 0, alc3: 0, limMin: 1, govMin: 1, alcMin: 1 };
 const outL = new Float32Array(N), outR = new Float32Array(N);
 const outputs = [[outL, outR]];
 const inputs = [[]];
@@ -201,6 +256,13 @@ for (let b = 0; b < total; b++) {
   if (proc.limG < 0.75) note(tSec, 'limiter working hard');
   if (Math.max(proc.P[4], proc.P[5], proc.P[6], proc.P[7]) > 1.1) note(tSec, 'sharp generator edges (fold above 1.1)');
 
+  {
+    const lg = proc.limG, gg = proc.govG ?? 1, ag = proc.alcG ?? 1;
+    lev.n++;
+    if (lg < 0.891) lev.lim1++; if (lg < 0.708) lev.lim3++; if (gg < 0.891) lev.gov1++; if (gg < 0.708) lev.gov3++;
+    if (ag < 0.891) lev.alc1++; if (ag < 0.708) lev.alc3++;
+    lev.limMin = Math.min(lev.limMin, lg); lev.govMin = Math.min(lev.govMin, gg); lev.alcMin = Math.min(lev.alcMin, ag);
+  }
   if ((b * N) % SR < N) {
     tempo.push({ t: b * N / SR, tape: proc.tapeS, shL: proc.P[16], shR: proc.P[17], reels: [0, 1, 2, 3].map((r) => (proc.reelLen[r] > 0 ? proc.P[27 + r] : NaN)), sync: proc.P[8], gens: [0, 1, 2, 3].map((g) => proc.P[g]) });
   }
@@ -214,9 +276,26 @@ for (let b = 0; b < total; b++) {
     if (ar > peak) peak = ar;
     if (al > 0.999 || ar > 0.999) clipCount++;
     sumSq += l * l + r * r; count += 2;
-    if (keep) {
-      keep[n * 2] = Math.max(-32767, Math.min(32767, Math.round(l * 32767)));
-      keep[n * 2 + 1] = Math.max(-32767, Math.min(32767, Math.round(r * 32767)));
+    {
+      const xs2 = [l, r];
+      for (let c = 0; c < 2; c++) {
+        const hb = tpHist[c];
+        hb[tpI] = xs2[c]; hb[tpI + 16] = xs2[c];
+        const a0 = Math.abs(xs2[c]);
+        if (a0 > samplePeak) samplePeak = a0;
+        if (a0 > 0.2 || truePeak > 0.2) {
+          for (let p = 0; p < 3; p++) {
+            let y = 0;
+            for (let k = 0; k < 16; k++) y += TPH[p][k] * hb[tpI + 1 + k];
+            const a = Math.abs(y);
+            if (a > truePeak) truePeak = a;
+          }
+        }
+      }
+      tpI = (tpI + 1) & 15;
+    }
+    if (wav) {
+      wav.frame(l, r);
     }
     if (injectAt.has(n)) { injectLevel = injectLevel ? 0 : 0.04; injected++; injectAt.delete(n); note(n / SR, 'synthetic step'); }
     const xs = [l + injectLevel, r + injectLevel];
@@ -406,6 +485,14 @@ if (metab.length) {
   }
 }
 
+{
+  const db = (v) => (20 * Math.log10(v + 1e-12)).toFixed(2);
+  const pc = (x) => ((100 * x) / Math.max(1, lev.n)).toFixed(2);
+  console.log(`Levels: sample peak ${db(samplePeak)} dBFS, true peak ${db(truePeak)} dBTP (output after the Level knob).`);
+  console.log(`  limiter: over 1 dB ${pc(lev.lim1)}%, over 3 dB ${pc(lev.lim3)}% of the time, deepest ${db(lev.limMin)} dB`);
+  console.log(`  output governor: over 1 dB ${pc(lev.gov1)}%, over 3 dB ${pc(lev.gov3)}%, deepest ${db(lev.govMin)} dB · tape level control: over 1 dB ${pc(lev.alc1)}%, deepest ${db(lev.alcMin)} dB`);
+}
+
 const near = (t) => {
   const hits = new Set();
   for (const e of events) if (Math.abs(e.t - t) < 0.008) hits.add(e.kind);
@@ -424,15 +511,9 @@ for (const c of real) { const k = near(c.t); byCause.set(k, (byCause.get(k) || 0
 for (const [k, v] of [...byCause.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)) console.log(`  ${String(v).padStart(4)} near: ${k}`);
 for (const c of real.sort((a, b) => b.ratio - a.ratio).slice(0, 6)) console.log(`  worst ${c.t.toFixed(3)}s  step ${c.mag.toFixed(3)}  ${c.ratio.toFixed(0)}x local  near: ${near(c.t)}`);
 
-if (opt.out) {
-  const data = Buffer.from(keep.buffer);
-  const h = Buffer.alloc(44);
-  h.write('RIFF', 0); h.writeUInt32LE(36 + data.length, 4); h.write('WAVE', 8);
-  h.write('fmt ', 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(2, 22);
-  h.writeUInt32LE(SR, 24); h.writeUInt32LE(SR * 4, 28); h.writeUInt16LE(4, 32); h.writeUInt16LE(16, 34);
-  h.write('data', 36); h.writeUInt32LE(data.length, 40);
-  writeFileSync(opt.out, Buffer.concat([h, data]));
-  console.log(`Wrote ${opt.out}`);
+if (wav) {
+  wav.close();
+  console.log(`Wrote ${wav.paths.join(', ')} (24-bit, ${SR} Hz)`);
 }
 if (opt.env) {
   writeFileSync(opt.env, Buffer.from(Float32Array.from(env.subarray(0, envI), (v) => 20 * Math.log10(v + 1e-6)).buffer));

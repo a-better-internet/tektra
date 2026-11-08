@@ -211,16 +211,18 @@ export function buildArchitecture(root, api) {
 
   /* ---- output ---- */
   const recBtn = h('button', { type: 'button', class: 'btn btn--small', id: 'record-toggle' }, 'Record output');
-  const recInfo = h('span', { class: 'live', id: 'record-info', text: 'Records what you hear to a file.' });
+  const recInfo = h('span', { class: 'live', id: 'record-info', text: 'Lossless 24-bit WAV at the engine’s own sample rate, taken after the limiter and before the Level knob, so the file is the same whatever you listen at. Very long sessions continue in a new file every 3.7 hours or so, with no gap.' });
+  const recFiles = h('ul', { class: 'record__files', id: 'record-files' });
   const outCard = card('out', 'O', 'Output', 'What reaches the speakers. The loop is the system; the dry cascade and reels are its raw material.',
     h('div', { class: 'knobs knobs--row' },
       knob('out.loop', { label: 'Loop', min: 0, max: 1.5, format: fmt.pct }),
       knob('out.dry', { label: 'Dry ×', min: 0, max: 1.5, format: fmt.pct }),
       knob('out.reels', { label: 'Reels', min: 0, max: 1.5, format: fmt.pct }),
       knob('out.space', { label: 'Space', min: 0, max: 1.5, format: fmt.pct })),
-    h('div', { class: 'record' }, recBtn, recInfo));
+    h('div', { class: 'record' }, recBtn, recInfo), recFiles);
   live.recBtn = recBtn;
   live.recInfo = recInfo;
+  live.recFiles = recFiles;
 
   root.append(genCard, multCard, loopCard, homeoCard, logicCard, outCard, reelCard);
 

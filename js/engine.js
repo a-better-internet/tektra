@@ -4,6 +4,7 @@
  * recorder. Everything the interface needs from the signal engine arrives as
  * 'frame' events about thirty times a second.
  */
+import { WavRecorder } from './recorder.js';
 
 export class Engine extends EventTarget {
   constructor() {
@@ -27,7 +28,9 @@ export class Engine extends EventTarget {
     this.starting = (async () => {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) throw new Error('This browser has no Web Audio support.');
-      const ctx = new AC({ latencyHint: 'playback' });
+      // 48 kHz: the rate the engine is tuned at and the offline renderer uses
+      let ctx;
+      try { ctx = new AC({ latencyHint: 'playback', sampleRate: 48000 }); } catch { ctx = new AC({ latencyHint: 'playback' }); }
       if (!ctx.audioWorklet) throw new Error('This browser cannot run audio worklets. Try a current Chrome, Firefox or Safari.');
       const url = new URL('./dsp/processor.js', import.meta.url);
       try {
@@ -77,6 +80,12 @@ export class Engine extends EventTarget {
       case 'frame':
         this.frame = m;
         this.emit('frame', m);
+        break;
+      case 'rec':
+        if (this.recorder) this.recorder.push(m.data);
+        break;
+      case 'rec-end':
+        if (this.recDone) { this.recDone(); this.recDone = null; }
         break;
       case 'halted':
         this.running = false;
@@ -154,31 +163,30 @@ export class Engine extends EventTarget {
 
   capture(reel, seconds) { this.post({ type: 'capture', reel, seconds }); }
 
-  startRecording() {
-    if (!this.ctx || this.recorder) return false;
-    if (typeof MediaRecorder === 'undefined') throw new Error('This browser cannot record audio here.');
-    const dest = this.ctx.createMediaStreamDestination();
-    this.node.connect(dest);
-    const types = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm'];
-    const mimeType = types.find((t) => MediaRecorder.isTypeSupported?.(t)) || '';
-    const rec = new MediaRecorder(dest.stream, mimeType ? { mimeType, audioBitsPerSecond: 192000 } : undefined);
-    const chunks = [];
-    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-    rec.start(1000);
-    this.recorder = { rec, chunks, dest, mimeType: rec.mimeType || mimeType, started: performance.now() };
+  /* Lossless recording of the finished signal, before the listening level. */
+  startRecording(meta) {
+    if (!this.node || this.recorder) return false;
+    this.recorder = new WavRecorder(this.ctx.sampleRate, meta);
+    this.recorder.onFile = (file) => this.emit('rec-file', file);
+    this.post({ type: 'rec-start' });
     return true;
   }
 
   stopRecording() {
     const r = this.recorder;
-    if (!r) return Promise.resolve(null);
-    this.recorder = null;
+    if (!r) return Promise.resolve([]);
     return new Promise((resolve) => {
-      r.rec.onstop = () => {
-        try { this.node.disconnect(r.dest); } catch { /* already gone */ }
-        resolve(new Blob(r.chunks, { type: r.mimeType || 'audio/webm' }));
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        this.recorder = null;
+        resolve(r.finish());
       };
-      r.rec.stop();
+      this.recDone = finish;
+      this.post({ type: 'rec-stop' });
+      // if the audio thread is suspended it cannot answer; keep what arrived
+      setTimeout(finish, 1500);
     });
   }
 }

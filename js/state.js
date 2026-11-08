@@ -99,7 +99,7 @@ export function defaultArch() {
     glide: 10,
     hold: 0.85,
     mult: [0.9, 0.75, 0.55, 0.2],
-    drive: 1.4,
+    drive: 1,
     loop: { fb: 0.9, time: 3.3, spread: 1.27, tone: 0.95, shift: 0.2, shiftSpread: 1, smear: 0.45, decay: 0.7, cross: 0.25 },
     bank: { q: 8, gains: bumps([[4, 2.5, 0.55], [11, 2.2, 0.6], [17, 1.8, 0.65], [21.5, 1.5, 0.35]], 0.15) },
     homeo: { ceil: 6, strength: 0.8, release: 2.5, breath: 0.3, depth: 3.5, metab: 1 },
@@ -129,7 +129,7 @@ export function defaultArch() {
     reelToMult: 0.25,
     liveIn: 0,
     out: { loop: 0.9, dry: 0.08, reels: 0.35, space: 0.35 },
-    helm: { inflow: 0.2, bias: 0, drift: 0, setpoint: -20, coupling: 0.8, era: 4, volume: 0.7 },
+    helm: { inflow: 0.2, bias: 0, drift: 0, setpoint: -20, coupling: 0.8, era: 4, volume: 0.85 },
   };
 }
 
@@ -153,7 +153,7 @@ export const PRESETS = [
     a.hold = 0.3;
     a.gens = [{ f: 97, fold: 0.6 }, { f: 157, fold: 0.3 }, { f: 254, fold: 0.7 }, { f: 411, fold: 0.2 }];
     a.mult = [1, 1, 0.8, 0.6];
-    a.drive = 1.7;
+    a.drive = 1.3;
     a.loop = { fb: 1, time: 0.31, spread: 1.21, tone: 0.8, shift: 2, shiftSpread: 1, smear: 0.3, decay: 0.5, cross: 0.15 };
     a.bank = { q: 7, gains: bumps([[9, 2, 0.6], [14, 1.4, 0.7], [19, 1.6, 0.6]], 0.1) };
     a.homeo = { ceil: 4, strength: 1, release: 0.7, breath: 0.7, depth: 8, metab: 1 };
@@ -167,10 +167,11 @@ export const PRESETS = [
     a.sync = 0.55;
     a.pm = 0.15;
     a.loop = { fb: 1.05, time: 0.18, spread: 1.5, tone: 0.55, shift: -0.8, shiftSpread: 1, smear: 0.25, decay: 0.4, cross: 0.3 };
-    a.homeo = { ceil: 5, strength: 1.1, release: 0.35, breath: 1.1, depth: 6, metab: 1 };
+    a.homeo = { ceil: 5, strength: 1.1, release: 0.35, breath: 1.1, depth: 5, metab: 1 };
     a.matrix.push(pin('FLUX', 'FDBK', -0.5), pin('L1', 'SYNC', 0.5), pin('CLMP', 'P2', 0.15));
     a.helm.era = 0.5;
-    a.helm.setpoint = -18;
+    a.helm.setpoint = -22;
+    a.out.loop = 0.75;
   }),
   variant('Relay Choir', 'Logic gates hand the material between self-recording reels at different speeds.', (a) => {
     a.glide = 8;
@@ -266,7 +267,7 @@ export function deriveArch(word) {
   a.hold = round(range(0.88, 0.97));
   a.pm = round(range(0, 0.2));
   a.mult = [round(range(0.5, 1)), round(range(0.3, 1)), round(range(0.2, 0.9)), round(range(0, 0.6))];
-  a.drive = round(range(1, 2.2));
+  a.drive = round(range(0.8, 1.4));
   a.loop = {
     fb: round(range(0.84, 1.02)),
     time: round(0.08 * Math.pow(2, r() * 6.3)),
@@ -308,7 +309,7 @@ export function deriveArch(word) {
   a.reelToLoop = round(range(0.3, 0.8));
   a.reelToMult = round(range(0, 0.45));
   a.out = { loop: 0.9, dry: round(range(0.05, 0.2)), reels: round(range(0.25, 0.5)), space: round(range(0.2, 0.5)) };
-  a.helm = { inflow: round(range(0.15, 0.45)), bias: 0, drift: 0, setpoint: Math.round(range(-25, -17)), coupling: 0.8, era: pick(ERA_SET), volume: 0.7 };
+  a.helm = { inflow: round(range(0.15, 0.45)), bias: 0, drift: 0, setpoint: Math.round(range(-25, -17)), coupling: 0.8, era: pick(ERA_SET), volume: 0.85 };
   return a;
 }
 

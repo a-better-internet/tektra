@@ -140,7 +140,7 @@ helmKnobs.volume = new Knob({
   ...volDef,
   id: 'helm-volume',
   size: 'md',
-  default: 0.7,
+  default: 0.85,
   value: arch.helm.volume,
   title: 'Output level. This one does not glide.',
   onInput: (v) => { arch.helm.volume = v; helmChanged(); },
@@ -529,35 +529,67 @@ renderSnaps();
 
 const recBtn = architecture.live.recBtn;
 const recInfo = architecture.live.recInfo;
+const recFiles = architecture.live.recFiles;
 let recTimer = 0;
+const mb = (n) => (n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : `${(n / 1048576).toFixed(1)} MB`);
+const dbfs = (v) => (v > 0 ? `${(20 * Math.log10(v)).toFixed(1)} dBFS` : '—');
+
+function offerFile(file, name, multi) {
+  const url = URL.createObjectURL(file.blob);
+  const li = document.createElement('li');
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${name}${multi || file.part > 1 ? `-part${file.part}` : ''}.wav`;
+  a.textContent = `Save ${a.download}`;
+  const what = document.createElement('span');
+  what.textContent = ` · ${clock(file.seconds)} · ${mb(file.blob.size)}`;
+  li.append(a, what);
+  recFiles.append(li);
+}
+
+let recName = '';
+engine.addEventListener('rec-file', (e) => {
+  if (engine.recorder) {
+    offerFile(e.detail, recName, true);
+    log(`Recording part ${e.detail.part} finished at the WAV size limit; recording continues in part ${e.detail.part + 1}.`);
+  }
+});
+
 recBtn.addEventListener('click', async () => {
   if (engine.recorder) {
     clearInterval(recTimer);
-    const blob = await engine.stopRecording();
+    const r = engine.recorder;
+    recBtn.disabled = true;
+    const files = await engine.stopRecording();
+    recBtn.disabled = false;
     recBtn.textContent = 'Record output';
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const ext = blob.type.includes('ogg') ? 'ogg' : blob.type.includes('mp4') ? 'm4a' : 'webm';
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `kybernetes-${arch.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}.${ext}`;
-    a.textContent = `Save recording (${(blob.size / 1048576).toFixed(1)} MB)`;
-    recInfo.replaceChildren(a);
-    if (window.top !== window.self) recInfo.append(' If saving does nothing in this view, open the instrument on its own page.');
-    log('Recording stopped.');
+    const last = files[files.length - 1];
+    if (last) offerFile(last, recName, files.length > 1);
+    const clip = r.clipped ? `${r.clipped} samples clipped` : 'no samples clipped';
+    recInfo.textContent = files.length
+      ? `Recorded ${clock(r.seconds)} · peak ${dbfs(r.peak)} · ${clip}.`
+      : 'Nothing was recorded: the system was halted the whole time.';
+    if (files.length && window.top !== window.self) recInfo.append(' If saving does nothing in this view, open the instrument on its own page.');
+    log(`Recording stopped: ${clock(r.seconds)}, peak ${dbfs(r.peak)}, ${clip}.`);
     return;
   }
   if (!engine.running) { notify('Engage the system before recording.', 'error'); return; }
-  try {
-    engine.startRecording();
-    recBtn.textContent = 'Stop recording';
-    const t0 = performance.now();
-    recInfo.textContent = 'Recording 00:00:00';
-    recTimer = setInterval(() => { recInfo.textContent = `Recording ${clock((performance.now() - t0) / 1000)}`; }, 1000);
-    log('Recording started.');
-  } catch (err) {
-    notify(err.message, 'error');
-  }
+  recName = `kybernetes-${arch.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 16).replace('T', '-').replace(':', '')}`;
+  recFiles.replaceChildren();
+  engine.startRecording({
+    title: `Kybernetes · ${arch.name}`,
+    comment: `Architecture code: ${encodeArch(arch)}`,
+  });
+  recBtn.textContent = 'Stop recording';
+  const show = () => {
+    const r = engine.recorder;
+    if (!r) return;
+    const clip = r.clipped ? `${r.clipped} clipped` : 'no clipping';
+    recInfo.textContent = `Recording ${clock(r.seconds)} · ${mb(r.bytes)} · peak ${dbfs(r.peak)} · ${clip}${engine.running ? '' : ' · paused while halted'}`;
+  };
+  show();
+  recTimer = setInterval(show, 500);
+  log(`Recording started: 24-bit WAV at ${(engine.ctx.sampleRate / 1000).toFixed(1)} kHz.`);
 });
 
 /* ---------- first words ---------- */

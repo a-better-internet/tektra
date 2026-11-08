@@ -504,7 +504,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .lamp--rec { background: color-mix(in srgb, var(--regulate) calc(var(--on) * 100%), var(--rule-hi)); box-shadow: 0 0 calc(var(--on) * 8px) color-mix(in srgb, var(--regulate) calc(var(--on) * 70%), transparent); }
 .record { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .record .live { margin-left: 0; text-align: left; }
-.record a { color: var(--signal); }
+.record a, .record__files a { color: var(--signal); }
+.record .live { flex: 1; min-width: 0; }
+.record__files { list-style: none; padding: 0; display: grid; gap: 4px; font: 400 11px/1.4 var(--f-data); color: var(--dim); overflow-wrap: anywhere; }
+.record__files:empty { display: none; }
 
 /* ---------- knobs ---------- */
 

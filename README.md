@@ -63,14 +63,33 @@ Keyboard: <kbd>Space</kbd> engages or halts, <kbd>P</kbd> perturbs, <kbd>S</kbd>
 
 The architecture is saved in the browser's local storage. Loaded sounds are not saved.
 
+## Levels and recording
+
+The signal chain is gain-staged to stay clean:
+* **Saturators only round off real overs.** Every saturator in the web (the cascade, the tape head, the loop) is a soft knee: exactly linear in normal use, rounding off only real overs. Drive is the one control meant to push the cascade into saturation.
+* **The cascade holds a steady level.** It eases a loud cascade down and lifts a quiet one by up to 6 dB, so Drive means the same thing in every web.
+* **The tape head has a level control.** It looks 1 ms ahead and eases the gain down before a peak is written.
+* **A gentle leveler evens out loudness.** It works at 2:1 around the last minute's level, so a breath still swells but the piece doesn't lurch between loud and quiet.
+* **A slow governor guards the output.** If peaks run hot for a while, it lowers the mix over a few seconds and lets it recover over about half a minute.
+* **A look-ahead limiter holds a −1 dBTP ceiling.** It detects true (inter-sample) peaks with 4× oversampling, and the output is linear below the ceiling.
+
+No sample can reach full scale. Every architecture peaks at or below −1 dBTP. With every control turned to its maximum at once, true peaks stay within 0.1 dB of the ceiling.
+
+**Record output** captures the finished signal straight from the engine: after the limiter, before the Level knob, at the engine's sample rate (48 kHz).
+* **Lossless:** 24-bit PCM WAV, with no codec and no resampling. In testing, a browser recording matched the engine's own output to within one 24-bit step on every sample.
+* **Self-describing:** each file is tagged with the architecture's name and code.
+* **Long sessions:** very long recordings continue in a new file every 3.7 hours or so (the WAV size limit), with no gap.
+* **Live readout:** the recording shows its peak level and counts any clipped samples. There shouldn't be any.
+
 ## Offline rendering and inspection
 
-`tools/render.mjs` runs the same signal engine in Node, with no browser, and writes a WAV file. At the end it reports how the system regulated itself:
+`tools/render.mjs` runs the same signal engine in Node, with no browser, and writes a 24-bit WAV file, streamed to disk so even 14-hour renders don't need the whole file in memory. At the end it reports how the system regulated itself:
 
 * **Headroom:** how often the feedback gain sat at its ceiling, and the trim the homeostat needed.
 * **Breathing:** breaths per window, the mean interval, and how much the intervals vary. Low variation means clock-like.
 * **Metabolism:** each shift, why it happened and where it moved the setpoint, depth and ceiling.
 * **Motion:** how fast pitch, tape speed, shift, level and brightness change from one second to the next, how far each generator ranges, how many abrupt moves there were, and how far the spectrum evolves over five minutes.
+* **Levels:** sample and true peak of the output, and how often the limiter, output governor and tape level control had to act.
 * **Clicks:** isolated sample discontinuities, each with what the engine was doing at that moment (a reel loop point, a record-head crossing, a tape lurch, the limiter, a gate). Sharp sawtooth edges from heavily folded generators are counted apart, as timbre.
 
 ```bash
@@ -99,6 +118,7 @@ js/state.js           the architecture model, presets, derivation, codes
 js/engine.js          AudioContext, worklet, analysers, reels, microphone, recorder
 js/epochs.js          detects the system settling into and leaving stable states
 js/history.js         undo and redo
+js/recorder.js        lossless 24-bit WAV recording
 js/main.js            wiring
 js/ui/                knobs, matrix, bank, web, chronicle, regulation trace, module cards
 tools/render.mjs      offline renderer
