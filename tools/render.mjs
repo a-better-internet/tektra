@@ -29,6 +29,8 @@
  *   --at T:ACTION    at T seconds: key=value sets a helm value, perturb strikes,
  *                    arch:PATH=VALUE changes the architecture
  *   --set PATH=VAL   override one architecture value, e.g. --set loop.smear=0.2
+ *   --pin EYE:DEST:A place a matrix pin by code, e.g. --pin LOW:WARM:0.6
+ *                    (an amount of 0 removes the pin)
  *   --ratio N        click threshold against the local level (default 9)
  *   --inject N       add N synthetic steps to the analysed signal (not the WAV)
  *   --hold R:HZ:SEC  put a raw sine of HZ, SEC long, on reel R (1-4) as held tape;
@@ -38,18 +40,18 @@
  */
 import { writeFileSync, openSync, writeSync, closeSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
-import { PRESETS, deriveArch, eraName, setPath } from '../js/state.js';
+import { PRESETS, SOURCES, DESTS, deriveArch, eraName, setPath } from '../js/state.js';
 
 const args = process.argv.slice(2);
 const opt = {
   seconds: 60, sr: 48000, preset: PRESETS[0].name, derive: null, out: null, bands: null,
-  every: 10, window: 600, at: [], set: [], hold: [], ratio: 9, inject: 0, quiet: false, env: null,
+  every: 10, window: 600, at: [], set: [], pin: [], hold: [], ratio: 9, inject: 0, quiet: false, env: null,
 };
 for (let i = 0; i < args.length; i++) {
   const k = args[i].replace(/^--/, '');
   const v = args[i + 1];
   if (k === 'quiet') { opt.quiet = true; continue; }
-  if (k === 'at' || k === 'set' || k === 'hold') { opt[k].push(v); i++; continue; }
+  if (k === 'at' || k === 'set' || k === 'hold' || k === 'pin') { opt[k].push(v); i++; continue; }
   if (k in opt) { opt[k] = ['seconds', 'sr', 'every', 'window', 'ratio', 'inject'].includes(k) ? Number(v) : v; i++; }
 }
 const say = (...a) => { if (!opt.quiet) console.log(...a); };
@@ -74,6 +76,13 @@ else {
 for (const s of opt.set) {
   const [path, val] = s.split('=');
   setPath(arch, path, Number(val));
+}
+for (const p of opt.pin) {
+  const [eye, dest, amt] = p.split(':');
+  const i = SOURCES.findIndex((x) => x.code === eye), j = DESTS.findIndex((x) => x.code === dest);
+  if (i < 0 || j < 0) { console.error(`Unknown pin ${p}. Eyes: ${SOURCES.map((x) => x.code).join(' ')}. Destinations: ${DESTS.map((x) => x.code).join(' ')}.`); process.exit(1); }
+  arch.matrix = arch.matrix.filter((m) => !(m[0] === i && m[1] === j));
+  if (Number(amt)) arch.matrix.push([i, j, Number(amt)]);
 }
 
 const proc = new Processor({ processorOptions: { arch } });
@@ -208,6 +217,7 @@ const breathT = [];
 let fbPinned = 0, frames = 0;
 const trims = [];
 const metab = [];
+const tempers = [];
 const sec = [];          // the system averaged over each second, for the motion report
 let nextSec = 1;
 let acc = { n: 0, out: 0, cent: 0 };
@@ -314,6 +324,7 @@ for (let b = 0; b < total; b++) {
   while (posted.length) {
     const m = posted.shift();
     if (m.type === 'metab') { metab.push(m); continue; }
+    if (m.type === 'temper') { tempers.push(m); continue; }
     if (m.type !== 'frame') continue;
     lastFrame = m;
     frames++;
@@ -329,7 +340,7 @@ for (let b = 0; b < total; b++) {
     }
     if (m.el >= nextSec) {
       nextSec = Math.floor(m.el) + 1;
-      sec.push({ t: m.el, gens: Array.from(m.gens), tape: m.stat[5], shift: m.stat[6], out: acc.out / acc.n, cent: 2 ** (acc.cent / acc.n) });
+      sec.push({ t: m.el, gens: Array.from(m.gens), tape: m.stat[5], shift: m.stat[6], out: acc.out / acc.n, cent: 2 ** (acc.cent / acc.n), warm: m.stat.length > 24 ? m.stat[24] : 0 });
       acc = { n: 0, out: 0, cent: 0 };
     }
     const s = m.stat;
@@ -377,7 +388,29 @@ for (let w0 = 0; w0 < opt.seconds; w0 += opt.window) {
 console.log(`Breathing (variation is the spread of breath intervals; low means clock-like):\n  ${rows.join('\n  ')}`);
 if (metab.length) {
   console.log(`Metabolism shifted ${metab.length} times:`);
-  for (const m of metab.slice(0, 40)) console.log(`  ${m.t.toFixed(0).padStart(6)}s  ${m.reason}: setpoint ${m.sp.toFixed(1)} dB, depth ${m.depth.toFixed(1)} dB, ceiling ${m.ceil.toFixed(1)} dB`);
+  for (const m of metab.slice(0, 40)) console.log(`  ${m.t.toFixed(0).padStart(6)}s  ${m.reason}: setpoint ${m.sp.toFixed(1)} dB, depth ${m.depth.toFixed(1)} dB, ceiling ${m.ceil.toFixed(1)} dB, warmth ${m.warmth >= 0 ? '+' : ''}${(m.warmth ?? 0).toFixed(2)}`);
+}
+
+/* Colour: how warm the web ran (0 cold and metallic, 1 settled into one
+   harmonic series), and in what spells. */
+{
+  const W = sec.filter((x) => x.t > 30).map((x) => x.warm);
+  if (W.length > 10) {
+    const srt = W.slice().sort((a, b) => a - b);
+    const q = (p) => srt[Math.min(srt.length - 1, Math.floor(p * srt.length))];
+    const spells = [];
+    let on = false, t0 = 0;
+    for (let i = 0; i < W.length; i++) {
+      if (!on && W[i] > 0.6) { on = true; t0 = i; }
+      else if (on && W[i] < 0.5) { on = false; spells.push(i - t0); }
+    }
+    if (on) spells.push(W.length - t0);
+    const warmPct = (100 * W.filter((v) => v > 0.6).length) / W.length;
+    const coldPct = (100 * W.filter((v) => v < 0.2).length) / W.length;
+    console.log(`Colour: warmth ${q(0.1).toFixed(2)} / ${q(0.5).toFixed(2)} / ${q(0.9).toFixed(2)} (10th, median, 90th percentile); warm (above 0.6) ${warmPct.toFixed(0)}% of the time, cold (below 0.2) ${coldPct.toFixed(0)}%.`);
+    if (spells.length) console.log(`  ${spells.length} warm spell${spells.length > 1 ? 's' : ''}, ${spells.slice(0, 12).map((x) => `${x} s`).join(', ')}${spells.length > 12 ? ' …' : ''}`);
+    if (tempers.length) console.log(`  temper turned ${tempers.length} times: ${tempers.slice(0, 12).map((x) => `${x.t.toFixed(0)} s ${x.warmer ? 'warmer' : 'colder'} → ${x.target.toFixed(2)}`).join(', ')}${tempers.length > 12 ? ' …' : ''}`);
+  }
 }
 
 /* Motion: rates per second and ranges, skipping the first 30 s while the web wakes. */

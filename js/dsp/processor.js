@@ -18,7 +18,7 @@ const NB = 24;
 const BAND_HZ = [63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800,
   1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500];
 const NSRC = 14;
-const NDST = 18;
+const NDST = 19;
 const CR = 32;            // control period, samples
 const FRAME_BLOCKS = 12;  // analysis frame every 12 render quanta (~30 Hz)
 const TWO_PI = 2 * Math.PI;
@@ -33,10 +33,10 @@ const S_CASC = 0, S_LOOP = 1, S_OUT = 2, S_REEL = 3, S_LOW = 4, S_MID = 5,
   S_HIGH = 6, S_CENT = 7, S_FLUX = 8, S_CLMP = 9, S_L1 = 10;
 // Destinations (the system's hands)
 const D_P1 = 0, D_FOLD = 4, D_SYNC = 5, D_MULT = 6, D_TAPE = 7, D_TILT = 8,
-  D_ROT = 9, D_SHFT = 10, D_SMR = 11, D_FDBK = 12, D_R1 = 13, D_RSPD = 17;
+  D_ROT = 9, D_SHFT = 10, D_SMR = 11, D_FDBK = 12, D_R1 = 13, D_RSPD = 17, D_WARM = 18;
 // Helm (the steersman's controls)
-const HELM_KEYS = ['inflow', 'bias', 'drift', 'setpoint', 'coupling', 'era', 'volume'];
-const H_INFLOW = 0, H_BIAS = 1, H_DRIFT = 2, H_SET = 3, H_COUP = 4, H_ERA = 5, H_VOL = 6;
+const HELM_KEYS = ['inflow', 'bias', 'drift', 'setpoint', 'coupling', 'era', 'volume', 'warmth'];
+const H_INFLOW = 0, H_BIAS = 1, H_DRIFT = 2, H_SET = 3, H_COUP = 4, H_ERA = 5, H_VOL = 6, H_WARM = 7;
 // Ramped parameters: set at control rate, interpolated per sample
 const R_GF = 0, R_FOLD = 4, R_SYNC = 8, R_D = 9, R_DRIVE = 13, R_DL = 14,
   R_DR = 15, R_SHL = 16, R_SHR = 17, R_SMR = 18, R_FB = 19, R_IN = 20,
@@ -52,6 +52,26 @@ const RATIOS = [];
 for (let q = 1; q <= 4; q++) {
   for (let p = 1; p <= 8; p++) RATIOS.push([p, q, Math.log(p / q)]);
 }
+
+/* The harmonic series the generators settle into as the web warms: the
+ * common fundamental that needs the least retuning, preferring low harmonic
+ * numbers. Every architecture so far lands within a few cents of one. */
+function harmonicSeries(fs) {
+  const lo = Math.min(...fs);
+  let best = null;
+  for (let k = 1; k <= 16; k++) {
+    const n0 = fs.map((f) => Math.max(1, Math.round(f / (lo / k))));
+    let lf = 0;
+    for (let i = 0; i < fs.length; i++) lf += Math.log2(fs[i] / n0[i]);
+    const f0 = Math.pow(2, lf / fs.length);
+    const n = fs.map((f) => Math.max(1, Math.round(f / f0)));
+    let cost = 0;
+    for (let i = 0; i < fs.length; i++) cost += Math.abs(1200 * Math.log2(fs[i] / (n[i] * f0))) + 8 * Math.log2(n[i]);
+    if (!best || cost < best.cost) best = { f0, n, cost };
+  }
+  return best;
+}
+function gcd(a, b) { return b ? gcd(b, a % b) : a; }
 
 function sc(x) {
   if (x > 3) return 1;
@@ -276,6 +296,12 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.gFold = new Float64Array(4);
     this.rp = new Float64Array([1, 1, 1, 1]);
     this.rq = new Float64Array([1, 1, 1, 1]);
+    // Warmth: how far the web has settled into one harmonic series
+    this.warmA = 0.3; this.warmT = 0; this.warmSpace = -1; this.tune = 0;
+    this.temper = 0.6; this.tOff = 0; this.tP = 0.5; this.tDir = 1; this.tTurns = 0; this.tHold = 1;
+    this.hCorr = new Float64Array(4);                // octaves to each generator's harmonic
+    this.rpH = new Float64Array([1, 1, 1, 1]);       // the neighbour ratio within that series
+    this.rqH = new Float64Array([1, 1, 1, 1]);
 
     // Filter bank
     this.b0 = new Float64Array(NB); this.a1 = new Float64Array(NB); this.a2 = new Float64Array(NB);
@@ -320,6 +346,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       this.hpA2 = (1 - al) / a0;
     }
     this.limEnv = 0; this.limG = 1; this.limHold = 0;
+    this.shelfL = 0; this.shelfR = 0; this.shelfG = 0; this.shelfK = coef(1 / (TWO_PI * 1800), sr);
     this.govEnv = 0; this.govG = 1;
     this.cmpEnv = 0; this.cmpG = 1; this.cmpT = 1;
     this.cascEnv = 0.25; this.cascG = 1; this.cascT = 1;
@@ -354,7 +381,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.gS = new Float64Array(4);
 
     // Helm
-    this.helmT = new Float64Array([0.5, 0, 0, -20, 1, 2, 0.7]);
+    this.helmT = new Float64Array([0.5, 0, 0, -20, 1, 2, 0.7, 0.3]);
     this.helmA = new Float64Array(this.helmT);
 
     // Parameters from the architecture
@@ -381,6 +408,11 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.blocks = 0;
 
     this.applyArch(options && options.processorOptions && options.processorOptions.arch);
+    // start at the architecture's own helm rather than gliding in from defaults
+    this.helmA.set(this.helmT);
+    this.warmA = this.helmT[H_WARM];
+    // a web that leans cold first turns warm, and one that leans warm first cools
+    this.tDir = this.warmA < 0.5 ? 1 : -1;
     if (this.bankQ === 0) this.setBank(4.32);
     this.primeRamps();
     this.port.onmessage = (e) => this.onMessage(e.data);
@@ -394,6 +426,14 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < 4; i++) {
       this.gBase[i] = clamp(+a.gens[i].f || 55, 8, 5000);
       this.gFold[i] = clamp(+a.gens[i].fold || 0, 0, 2.5);
+    }
+    {
+      const hs = harmonicSeries([...this.gBase]);
+      for (let i = 0; i < 4; i++) {
+        this.hCorr[i] = Math.log2(hs.n[i] * hs.f0 / this.gBase[i]);
+        const j = (i + 3) & 3, g = gcd(hs.n[i], hs.n[j]);
+        this.rpH[i] = hs.n[i] / g; this.rqH[i] = hs.n[j] / g;
+      }
     }
     this.syncBase = clamp(+a.sync || 0, 0, 1);
     this.glide = a.glide === undefined ? 10 : clamp(+a.glide, 0.05, 60);
@@ -428,6 +468,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.breath = clamp(+H.breath, 0, 2);
     this.depth = clamp(+H.depth || 6, 1, 24);
     this.metab = H.metab === undefined ? 1 : clamp(+H.metab, 0, 2);
+    this.temper = H.temper === undefined ? 0.6 : clamp(+H.temper, 0, 1);
     this.M.fill(0);
     for (const p of a.matrix || []) {
       const i = p[0] | 0, j = p[1] | 0;
@@ -475,6 +516,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     T[H_COUP] = clamp(T[H_COUP], 0, 2);
     T[H_ERA] = clamp(T[H_ERA], 0.25, 64);
     T[H_VOL] = clamp(T[H_VOL], 0, 1);
+    T[H_WARM] = clamp(T[H_WARM], 0, 1);
   }
 
   setBank(q) {
@@ -659,6 +701,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.benv.fill(0); this.cg.fill(1);
     this.hL.clear(); this.hR.clear(); this.shPL = this.shPR = 0;
     this.smear.clear(); this.space.clear();
+    this.shelfL = this.shelfR = 0;
     this.lastL = this.lastR = 0;
     this.envCasc = this.envLoop = this.envOut = this.envReel = 0;
     this.loopDb = -90; this.loopSlow = -60; this.trim = 0; this.fastG = 1;
@@ -794,6 +837,35 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     });
   }
 
+  /* ---------- temper: the regulator of colour ----------
+   * The ear tires of a colour. While the web keeps one, pressure builds,
+   * faster when the web is still (every spectral eye near what it is used
+   * to) and slower when it is busy. When it is full the web leans the other
+   * way: warmer after a cold spell, colder after a warm one. How far it
+   * leans is read off the eyes at that moment, so some warm spells are deep
+   * and some barely there, and how long the new colour holds is decided by
+   * the logic gates that happen to be open then, so the turns never keep
+   * time. Era stretches it all. */
+  temperate(sEra) {
+    if (this.temper <= 0) { this.tOff = 0; return; }
+    const src = this.src, dt = 1 / this.crHz;
+    const busy = (Math.abs(src[S_LOW]) + Math.abs(src[S_MID]) + Math.abs(src[S_HIGH]) + Math.abs(src[S_CENT])) * 0.5;
+    const still = 1 - clamp(busy, 0, 1);
+    this.tP += (dt / (300 * sEra * this.tHold)) * (0.5 + still);
+    if (this.tP < 1) return;
+    this.tP = 0;
+    this.tTurns++;
+    // memory up on fresh material, and a low-leaning spectrum, lean further
+    const e = clamp(0.5 + 0.4 * (src[S_REEL] - src[S_CASC] + src[S_LOW] - src[S_HIGH]), 0, 1);
+    this.tOff = this.tDir * (0.35 + 0.6 * e);
+    // each open gate holds the new colour longer: from about half to nearly twice
+    let open = 0;
+    for (let g = 0; g < 4; g++) open += this.gState[g];
+    this.tHold = 0.55 + 0.33 * open;
+    this.tDir = -this.tDir;
+    this.port.postMessage({ type: 'temper', t: this.tSec, warmer: this.tOff > 0, target: clamp(this.helmT[H_WARM] + this.tOff * this.temper, 0, 1), turns: this.tTurns });
+  }
+
   /* An eye that gets used to what it sees: returns deviation from its own slow average. */
   habit(i, x, range, k) {
     if (!this.habitSet[i]) { this.habitSet[i] = 1; this.habitAvg[i] = x; }
@@ -815,6 +887,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     A[H_BIAS] += (T[H_BIAS] - A[H_BIAS]) * kH;
     A[H_SET] += (T[H_SET] - A[H_SET]) * kH;
     A[H_COUP] += (T[H_COUP] - A[H_COUP]) * kH;
+    A[H_WARM] += (T[H_WARM] - A[H_WARM]) * kH;
     A[H_DRIFT] += (T[H_DRIFT] - A[H_DRIFT]) * coef(glide * 3, crHz);
     A[H_ERA] = Math.exp(Math.log(A[H_ERA]) + (Math.log(T[H_ERA]) - Math.log(A[H_ERA])) * coef(1.5, crHz));
     A[H_VOL] += (T[H_VOL] - A[H_VOL]) * coef(0.08, crHz);
@@ -965,6 +1038,18 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     mdG[D_TILT] += (md[D_TILT] - mdG[D_TILT]) * kS;
     mdG[D_ROT] += (md[D_ROT] - mdG[D_ROT]) * kS;
 
+    // ---- warmth: the helm's lean, what the eyes push, what the metabolism
+    // has learned. It retunes and recolours the whole web, so it moves more
+    // slowly than anything else. ----
+    if (this.running) this.temperate(sEra);
+    this.warmT = clamp(A[H_WARM] + this.tOff * this.temper + md[D_WARM] * 0.6, 0, 1);
+    this.warmA += (this.warmT - this.warmA) * coef(glideS * 1.5, crHz);
+    const wm = this.warmA;
+    // The generators settle into their harmonic series early (fully by 0.6),
+    // since in-between tunings beat; the rest follows warmth in proportion.
+    const wq = Math.min(1, wm / 0.6), tune = wq * wq * (3 - 2 * wq);
+    this.tune = tune;
+
     // ---- map to the web ----
     const drift = A[H_DRIFT] / 12;
     const P = this.P;
@@ -972,11 +1057,13 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     // to each other, so the beats between them hold steady instead of
     // speeding up and slowing down. Only the unheld part moves one alone.
     const common = (mdG[D_P1] + mdG[D_P1 + 1] + mdG[D_P1 + 2] + mdG[D_P1 + 3]) * 0.25;
+    // In tune, the ratios are held exactly: only the common motion remains.
     for (let i = 0; i < 4; i++) {
-      const own = common + (mdG[D_P1 + i] - common) * (1 - this.hold);
-      const f = clamp(this.gBase[i] * Math.pow(2, drift + own * 0.4), 4, 9000);
+      const own = common + (mdG[D_P1 + i] - common) * (1 - this.hold) * (1 - tune);
+      const f = clamp(this.gBase[i] * Math.pow(2, drift + own * 0.4 + tune * this.hCorr[i]), 4, 9000);
       this.ramp(R_GF + i, f);
-      this.ramp(R_FOLD + i, clamp(this.gFold[i] + md[D_FOLD] * 0.7, 0, 2.6));
+      // warm generators fold less: rounder waveforms
+      this.ramp(R_FOLD + i, clamp(this.gFold[i] + md[D_FOLD] * 0.7, 0, 2.6) * (1 - 0.45 * wm));
     }
     for (let i = 0; i < 4; i++) {
       const j = (i + 3) & 3;
@@ -988,9 +1075,13 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       }
       this.rp[i] = bp; this.rq[i] = bq;
     }
-    this.ramp(R_SYNC, clamp(this.syncBase + md[D_SYNC] * 0.5, 0, 1.2) * 0.05);
-    this.ramp(R_PM, this.pmBase);
-    for (let i = 0; i < 4; i++) this.ramp(R_D + i, clamp(this.multBase[i] + md[D_MULT] * 0.5, 0, 1));
+    // In tune, coupling holds the series' own ratios, a little more firmly.
+    this.ramp(R_SYNC, clamp(this.syncBase + md[D_SYNC] * 0.5, 0, 1.2) * 0.05 * (1 + 2 * tune) + 0.004 * tune);
+    this.ramp(R_PM, this.pmBase * (1 - 0.6 * wm));
+    // Warmth lightens multiplication, which is what makes a cascade clang;
+    // the last stage (multiplied by the loop) only a little, since it is
+    // also what keeps the passes from beating against each other.
+    for (let i = 0; i < 4; i++) this.ramp(R_D + i, clamp(this.multBase[i] + md[D_MULT] * 0.5, 0, 1) * (1 - (i === 3 ? 0.3 : 0.55) * wm));
     this.ramp(R_DRIVE, this.drive);
 
     const tT = clamp(this.timeBase * Math.pow(2, mdG[D_TAPE] * 0.6), 0.01, 9);
@@ -1012,7 +1103,14 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     const sh = this.shiftBase + mdG[D_SHFT] * (0.15 + Math.abs(this.shiftBase) * 0.25);
     this.ramp(R_SHL, sh);
     this.ramp(R_SHR, sh * (1 - 2 * this.shiftSpread));
-    this.ramp(R_SMR, clamp(this.smearBase + md[D_SMR] * 0.4, 0, 0.95));
+    this.ramp(R_SMR, clamp(this.smearBase + md[D_SMR] * 0.4 + 0.2 * wm * (1 - this.smearBase), 0, 0.95));
+    // Outside the loop, so it never compounds: a gentle shelf above 1.8 kHz
+    // and a darker room.
+    this.shelfG = 0.6 * wm;
+    if (Math.abs(wm - this.warmSpace) > 0.004) {
+      this.warmSpace = wm;
+      this.space.k = coef(1 / (TWO_PI * 5200 * (1 - 0.35 * wm)), this.sr);
+    }
 
     // ---- the homeostat ----
     // Inhale: while the loop is below its setpoint the gain opens slowly.
@@ -1147,6 +1245,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
 
     const P = this.P, dP = this.dP;
     const ph = this.ph, gy = this.gy, gy2 = this.gy2, rp = this.rp, rq = this.rq;
+    const rpH = this.rpH, rqH = this.rqH;
     const b0a = this.b0, a1a = this.a1, a2a = this.a2;
     const zl1 = this.zl1, zl2 = this.zl2, zr1 = this.zr1, zr2 = this.zr2;
     const benv = this.benv, bg = this.bg, dbg = this.dbg;
@@ -1169,6 +1268,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     for (let off = 0; off < n; off += CR) {
       this.control();
       const end = off + CR < n ? off + CR : n;
+      const tune = this.tune, shelfG = this.shelfG, shelfK = this.shelfK;
       for (let s = off; s < end; s++) {
         for (let i = 0; i < NRAMP; i++) P[i] += dP[i];
 
@@ -1224,7 +1324,8 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         for (let i = 0; i < 4; i++) {
           const j = (i + 3) & 3;
           const f = P[R_GF + i];
-          const c = K * f * Math.sin(TWO_PI * (rp[i] * ph[j] - rq[i] * ph[i])) / rq[i];
+          let c = K * f * Math.sin(TWO_PI * (rp[i] * ph[j] - rq[i] * ph[i])) / rq[i];
+          if (tune > 0.001) c += tune * (K * f * Math.sin(TWO_PI * (rpH[i] * ph[j] - rqH[i] * ph[i])) / rqH[i] - c);
           let phi = ph[i] + (f + c) * invSr;
           phi -= Math.floor(phi);
           ph[i] = phi;
@@ -1346,6 +1447,11 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         space.run(mL, mR);
         mL += space.outL * P[R_OSPACE];
         mR += space.outR * P[R_OSPACE];
+        // warmth: a first-order shelf softening everything above 1.8 kHz
+        this.shelfL += (mL - this.shelfL) * shelfK;
+        this.shelfR += (mR - this.shelfR) * shelfK;
+        mL -= shelfG * (mL - this.shelfL);
+        mR -= shelfG * (mR - this.shelfR);
         // 2nd-order high-pass at 32 Hz: difference tones below this are felt, not heard
         const hb0 = this.hpB0, hb1 = this.hpB1, ha1 = this.hpA1, ha2 = this.hpA2;
         const dl = hb0 * mL + this.hpL1;
@@ -1514,7 +1620,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         dbOf(this.envCasc), this.P[R_SMR], this.capture >= 0 ? this.capture : -1,
         this.inhale ? 1 : 0, this.breaths,
         this.mOsp, this.mOdepth, this.mOceil, this.mP, this.mReg, this.mShifts, this.spEff,
-        this.mStalled ? 1 : 0, this.mI,
+        this.mStalled ? 1 : 0, this.mI, this.warmA, this.tOff * this.temper, this.tP,
       ]),
     });
   }

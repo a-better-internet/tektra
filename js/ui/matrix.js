@@ -6,9 +6,9 @@
 import { theme, rgba, fit, dprOf } from './theme.js';
 
 const SRC_GROUPS = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 3, 3];
-const DST_GROUPS = [0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3];
+const DST_GROUPS = [0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4];
 const SRC_GROUP_NAMES = ['Signals', 'Spectrum', 'Dynamics', 'Logic'];
-const DST_GROUP_NAMES = ['Generators', '×', 'Loop', 'Reels'];
+const DST_GROUP_NAMES = ['Generators', '×', 'Loop', 'Reels', 'Colour'];
 
 export class Matrix {
   constructor(canvas, inspector, { sources, dests, getArch, onChange, onCommit }) {

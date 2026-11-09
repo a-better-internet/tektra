@@ -108,8 +108,10 @@ export function buildArchitecture(root, api) {
       knob('homeo.breath', { label: 'Breath', min: 0, max: 2, format: fmt.num, title: 'How fast the loop inhales and exhales' }),
       knob('homeo.depth', { label: 'Depth', min: 1, max: 24, format: fmt.db, title: 'How far the loop falls on each exhale' }),
       knob('bank.q', { label: 'Precision', min: 1.5, max: 24, curve: 'log', format: fmt.q, title: 'Filter Q of the bank: 4.3 is a true third-octave, higher rings' }),
-      knob('homeo.metab', { label: 'Metabolism', min: 0, max: 2, format: fmt.pct, title: 'A slower regulator that watches the breathing. When it turns clock-like or stops changing, the metabolism shifts the setpoint, depth and ceiling. 0% turns it off.' })),
-    live.metab = h('p', { class: 'card__live', id: 'metab-live', text: 'The metabolism is resting.' }));
+      knob('homeo.metab', { label: 'Metabolism', min: 0, max: 2, format: fmt.pct, title: 'A slower regulator that watches the breathing. When it turns clock-like or stops changing, the metabolism shifts the setpoint, depth and ceiling. 0% turns it off.' }),
+      knob('homeo.temper', { label: 'Temper', min: 0, max: 1, format: fmt.pct, title: 'How far the colour wanders from the helm’s Warmth. When the web has kept one colour for a while, it leans the other way: warmer after a cold spell, colder after a warm one. 0% holds the colour still.' })),
+    live.metab = h('p', { class: 'card__live', id: 'metab-live', text: 'The metabolism is resting.' }),
+    live.temper = h('p', { class: 'card__live', id: 'temper-live', text: 'Colour as the helm sets it.' }));
 
   /* ---- logic ---- */
   const srcOptions = SOURCES.map((s, i) => ({ id: i, label: `${s.code} · ${s.short}` }));
@@ -238,6 +240,11 @@ export function buildArchitecture(root, api) {
           : moved || st[18] > 0.02
             ? `Setpoint ${fmt.db(st[15])}, depth ${fmt.db(st[16])}, ceiling ${fmt.db(st[17])} · pressure ${Math.round(st[18] * 100)}% · ${st[20]} shift${st[20] === 1 ? '' : 's'} so far`
             : 'The metabolism is resting: the breathing is varied enough.';
+      }
+      if (st.length > 26) {
+        const off = st[25];
+        live.temper.textContent = getArch().homeo.temper === 0 ? `Colour held at ${Math.round(st[24] * 100)}% warm.`
+          : `Colour ${Math.round(st[24] * 100)}% warm · temper leaning ${Math.abs(off) < 0.01 ? 'nowhere yet' : off > 0 ? 'warmer' : 'colder'} · ready to turn ${Math.round(st[26] * 100)}%`;
       }
       for (let g = 0; g < 4; g++) live.lamps[g].style.setProperty('--on', frame.gates[g].toFixed(3));
       for (let r = 0; r < 4; r++) {

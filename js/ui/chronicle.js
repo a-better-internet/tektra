@@ -223,6 +223,10 @@ export class Chronicle {
         ctx.lineWidth = 1.25;
         ctx.beginPath(); ctx.arc(x, padT + plotH + 4.5, 3, 0, Math.PI * 2); ctx.stroke();
         ctx.lineWidth = 1;
+      } else if (m.kind === 'warm' || m.kind === 'cold') {
+        // temper turning: a dot under the strata, warm or cold
+        ctx.fillStyle = m.kind === 'warm' ? theme.warm : theme.signal;
+        ctx.beginPath(); ctx.arc(x, padT + plotH + 4.5, 2.5, 0, Math.PI * 2); ctx.fill();
       } else if (m.kind === 'epoch') {
         ctx.fillStyle = rgba(theme.ink, 0.5);
         ctx.fillRect(Math.round(x), padT, 1, plotH);

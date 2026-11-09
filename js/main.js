@@ -104,8 +104,9 @@ const HELM = [
   { key: 'setpoint', label: 'Setpoint', min: -40, max: -6, format: fmt.db, title: 'The level the homeostat breathes around, like a thermostat’s dial' },
   { key: 'coupling', label: 'Coupling', min: 0, max: 2, format: fmt.x, title: 'How strongly every eye turns every knob' },
   { key: 'era', label: 'Era', min: 0.25, max: 64, curve: 'log', format: (v) => `×${v < 1 ? v.toFixed(2) : v.toFixed(1)} ${eraName(v)}`, title: 'Stretches every slow process: release, breath, glide, habituation' },
+  { key: 'warmth', label: 'Warmth', min: 0, max: 1, format: fmt.pct, title: 'The colour the web leans toward: cold and metallic at 0%, settled into one warm harmonic series at 100%. Temper wanders around it; the amber arc shows the colour now.' },
 ];
-const HELM_INDEX = { inflow: 0, bias: 1, drift: 2, setpoint: 3, coupling: 4, era: 5, volume: 6 };
+const HELM_INDEX = { inflow: 0, bias: 1, drift: 2, setpoint: 3, coupling: 4, era: 5, volume: 6, warmth: 7 };
 const helmKnobs = {};
 const helmDefaults = defaultArch().helm;
 
@@ -133,6 +134,7 @@ for (const def of HELM) {
     onCommit: (v) => helmCommitted(def, v),
   });
   helmKnobs[def.key] = k;
+  if (def.key === 'warmth') k.el.classList.add('knob--row');
   helmGrid.append(k.el);
 }
 const volDef = { key: 'volume', label: 'Level', min: 0, max: 1, format: fmt.pct };
@@ -324,7 +326,10 @@ engine.addEventListener('frame', (e) => {
     lastClampNote = elapsed;
     log('The loop pushed past its ceiling. The homeostat clamped it hard.', 'event');
   }
-  for (const [key, k] of Object.entries(helmKnobs)) k.setActual(frame.helm[HELM_INDEX[key]]);
+  for (const [key, k] of Object.entries(helmKnobs)) {
+    // Warmth's arc shows the colour itself, wherever temper and the eyes have taken it
+    k.setActual(key === 'warmth' && frame.stat.length > 24 ? frame.stat[24] : frame.helm[HELM_INDEX[key]]);
+  }
   const now = performance.now();
   if (now - lastPanel > 100) {
     lastPanel = now;
@@ -337,6 +342,7 @@ engine.addEventListener('frame', (e) => {
       const moved = Math.abs(s[15]) + Math.abs(s[16]) + Math.abs(s[17]) > 0.1;
       $('#metab-read').textContent = arch.homeo.metab === 0 ? 'metabolism off'
         : `metabolism ${moved ? `${fmt.db(s[15])} · depth ${fmt.db(s[16])} · ceiling ${fmt.db(s[17])}` : 'resting'} · pressure ${Math.round(s[18] * 100)}%`;
+      if (s.length > 24) $('#metab-read').textContent += ` · colour ${Math.round(s[24] * 100)}% warm`;
     }
   }
 });
@@ -351,6 +357,14 @@ const METAB_WHY = {
   unchanging: 'the breathing had not changed its pace in a long while',
   stalled: 'the loop had stopped breathing',
 };
+engine.addEventListener('temper', (e) => {
+  const m = e.detail;
+  const pct = `${Math.round(m.target * 100)}%`;
+  log(m.warmer
+    ? `Temper turns warmer: the web has kept a cold colour for a while. It leans toward ${pct} warmth.`
+    : `Temper turns colder: the web has kept a warm colour for a while. It leans toward ${pct} warmth.`, 'event');
+  chronicle.mark(m.t, m.warmer ? 'warm' : 'cold', 'temper');
+});
 engine.addEventListener('metab', (e) => {
   const m = e.detail;
   log(`Metabolism shifts, because ${METAB_WHY[m.reason] || 'the breathing had settled'}. Setpoint ${fmt.db(m.sp)}, depth ${fmt.db(m.depth)}, ceiling ${fmt.db(m.ceil)}.`, 'event');

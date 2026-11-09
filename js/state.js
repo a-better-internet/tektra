@@ -47,9 +47,12 @@ export const DESTS = [
   { code: 'R3', name: 'Reel 3 level', group: 3, node: 'r3' },
   { code: 'R4', name: 'Reel 4 level', group: 3, node: 'r4' },
   { code: 'RSPD', name: 'Reel speed', group: 3, node: 'reels' },
+  { code: 'WARM', name: 'Warmth', group: 4, node: 'gens' },
 ];
+// Derived webs pin only the first 18, so names keep the webs they always had.
+const PIN_DESTS = 18;
 
-export const HELM_KEYS = ['inflow', 'bias', 'drift', 'setpoint', 'coupling', 'era', 'volume'];
+export const HELM_KEYS = ['inflow', 'bias', 'drift', 'setpoint', 'coupling', 'era', 'volume', 'warmth'];
 
 export const GATE_MODES = [
   { id: 'gt', label: 'A > B' },
@@ -91,7 +94,7 @@ const pin = (s, d, a) => [S[s], D[d], a];
 
 export function defaultArch() {
   return {
-    v: 4,
+    v: 5,
     name: 'Drift Nebula',
     gens: [{ f: 92.5, fold: 0.7 }, { f: 138.6, fold: 0.5 }, { f: 207.7, fold: 0.8 }, { f: 349.2, fold: 0.4 }],
     sync: 0.15,
@@ -102,7 +105,7 @@ export function defaultArch() {
     drive: 1,
     loop: { fb: 0.9, time: 3.3, spread: 1.27, tone: 0.95, shift: 0.2, shiftSpread: 1, smear: 0.45, decay: 0.7, cross: 0.25 },
     bank: { q: 8, gains: bumps([[4, 2.5, 0.55], [11, 2.2, 0.6], [17, 1.8, 0.65], [21.5, 1.5, 0.35]], 0.15) },
-    homeo: { ceil: 6, strength: 0.8, release: 2.5, breath: 0.3, depth: 3.5, metab: 1 },
+    homeo: { ceil: 6, strength: 0.8, release: 2.5, breath: 0.3, depth: 3.5, metab: 1, temper: 0.6 },
     // Gentle by default: pitch is only nudged by slow spectral balance, never
     // by the breath, and the strongest pins shape timbre rather than pitch.
     matrix: [
@@ -129,7 +132,7 @@ export function defaultArch() {
     reelToMult: 0.25,
     liveIn: 0,
     out: { loop: 0.9, dry: 0.08, reels: 0.35, space: 0.35 },
-    helm: { inflow: 0.2, bias: 0, drift: 0, setpoint: -20, coupling: 0.8, era: 4, volume: 0.85 },
+    helm: { inflow: 0.2, bias: 0, drift: 0, setpoint: -20, coupling: 0.8, era: 4, volume: 0.85, warmth: 0.25 },
   };
 }
 
@@ -147,7 +150,21 @@ function variant(name, description, edit) {
 }
 
 export const PRESETS = [
-  variant('Drift Nebula', 'Open fifths folded through the full cascade, on a long smeared tape. Slowly evolving, wide and gently churning.', () => {}),
+  variant('Drift Nebula', 'Open fifths folded through the full cascade, on a long smeared tape. Slowly evolving, wide and gently churning. Its colour wanders between cold and warm.', () => {}),
+  variant('Hearth', 'Warm. Generators in one low harmonic series, light multiplication and a long, soft smear. Its colour still wanders, but it leans toward a glow.', (a) => {
+    a.glide = 14;
+    a.gens = [{ f: 73.4, fold: 0.5 }, { f: 110.1, fold: 0.4 }, { f: 146.8, fold: 0.6 }, { f: 220.2, fold: 0.3 }];
+    a.sync = 0.25;
+    a.mult = [0.7, 0.5, 0.35, 0.2];
+    // no shift: pure harmonics re-entering a shifted loop beat against themselves
+    a.loop = { fb: 0.92, time: 4.1, spread: 1.17, tone: 0.7, shift: 0, shiftSpread: 1, smear: 0.6, decay: 0.75, cross: 0.4 };
+    a.bank = { q: 5, gains: bumps([[5, 3, 0.8], [10, 2.5, 0.6], [15, 2, 0.3]], 0.12) };
+    a.homeo = { ceil: 7, strength: 0.8, release: 3, breath: 0.25, depth: 4, metab: 1, temper: 0.5 };
+    a.out = { loop: 0.75, dry: 0.15, reels: 0.35, space: 0.45 };
+    a.helm.era = 8;
+    a.helm.setpoint = -21;
+    a.helm.warmth = 0.75;
+  }),
   variant('Iron Weather', 'Restless. Inharmonic generators, deep multiplication and narrow bands: metallic squalls that ring and clamp.', (a) => {
     a.glide = 2;
     a.hold = 0.3;
@@ -156,9 +173,11 @@ export const PRESETS = [
     a.drive = 1.3;
     a.loop = { fb: 1, time: 0.31, spread: 1.21, tone: 0.8, shift: 2, shiftSpread: 1, smear: 0.3, decay: 0.5, cross: 0.15 };
     a.bank = { q: 7, gains: bumps([[9, 2, 0.6], [14, 1.4, 0.7], [19, 1.6, 0.6]], 0.1) };
-    a.homeo = { ceil: 4, strength: 1, release: 0.7, breath: 0.7, depth: 8, metab: 1 };
+    a.homeo = { ceil: 4, strength: 1, release: 0.7, breath: 0.7, depth: 8, metab: 1, temper: 0.6 };
+    a.homeo.temper = 0.4;
     a.helm.era = 1;
     a.helm.setpoint = -22;
+    a.helm.warmth = 0.1;
   }),
   variant('Breathing Engine', 'Restless. Near-unison generators lock and unlock; a short loop and a fast homeostat give it a pulse.', (a) => {
     a.glide = 1.5;
@@ -167,10 +186,11 @@ export const PRESETS = [
     a.sync = 0.55;
     a.pm = 0.15;
     a.loop = { fb: 1.05, time: 0.18, spread: 1.5, tone: 0.55, shift: -0.8, shiftSpread: 1, smear: 0.25, decay: 0.4, cross: 0.3 };
-    a.homeo = { ceil: 5, strength: 1.1, release: 0.35, breath: 1.1, depth: 5, metab: 1 };
+    a.homeo = { ceil: 5, strength: 1.1, release: 0.35, breath: 1.1, depth: 5, metab: 1, temper: 0.6 };
     a.matrix.push(pin('FLUX', 'FDBK', -0.5), pin('L1', 'SYNC', 0.5), pin('CLMP', 'P2', 0.15));
     a.helm.era = 0.5;
     a.helm.setpoint = -22;
+    a.helm.warmth = 0.25;
     a.out.loop = 0.75;
   }),
   variant('Relay Choir', 'Logic gates hand the material between self-recording reels at different speeds.', (a) => {
@@ -185,17 +205,20 @@ export const PRESETS = [
     a.reelToMult = 0.5;
     a.out.reels = 0.6;
     a.matrix.push(pin('L4', 'R4', 0.6), pin('L1', 'SMR', 0.3), pin('L3', 'TILT', -0.2));
+    a.homeo.temper = 0.7;
     a.helm.era = 4;
+    a.helm.warmth = 0.3;
   }),
   variant('Gas Giant', 'Very low generators, a long tape and a slowly widening shifter inside heavy smear. The slowest.', (a) => {
     a.glide = 20;
     a.gens = [{ f: 27.5, fold: 1.2 }, { f: 41.2, fold: 1.0 }, { f: 61.7, fold: 1.1 }, { f: 92.5, fold: 0.8 }];
     a.loop = { fb: 0.94, time: 5.5, spread: 1.09, tone: 0.45, shift: -0.4, shiftSpread: 1, smear: 0.75, decay: 0.8, cross: 0.35 };
     a.bank = { q: 5, gains: bumps([[3, 3, 0.9], [10, 2.5, 0.6], [15.5, 2, 0.45]], 0.12) };
-    a.homeo = { ceil: 8, strength: 0.8, release: 3, breath: 0.25, depth: 5, metab: 1 };
+    a.homeo = { ceil: 8, strength: 0.8, release: 3, breath: 0.25, depth: 5, metab: 1, temper: 0.6 };
     a.out.space = 0.55;
     a.helm.era = 16;
     a.helm.setpoint = -19;
+    a.helm.warmth = 0.55;
   }),
   variant('Cold Lattice', 'High, sparse and glassy. Little folding, very narrow bands, an almost still shift.', (a) => {
     a.glide = 15;
@@ -204,8 +227,10 @@ export const PRESETS = [
     a.loop = { fb: 0.92, time: 2.7, spread: 1.31, tone: 0.9, shift: 0.12, shiftSpread: 1, smear: 0.55, decay: 0.7, cross: 0.2 };
     a.bank = { q: 14, gains: bumps([[13, 2, 0.6], [18, 1.5, 0.8], [22, 1.2, 0.5]], 0.05) };
     a.out.dry = 0.05;
+    a.homeo.temper = 0.5;
     a.helm.era = 8;
     a.helm.setpoint = -24;
+    a.helm.warmth = 0;
   }),
   variant('Open Web', 'Lightly patched and moderately set. A starting point for building your own architecture.', (a) => {
     a.matrix = [pin('CLMP', 'ROT', 0.4), pin('FLUX', 'TAPE', 0.2), pin('L1', 'R1', 0.5)];
@@ -242,6 +267,8 @@ function sequence(seed) {
 const RATIO_SET = [1.0595, 1.125, 1.2, 1.25, 1.3333, 1.4142, 1.5, 1.6, 1.618, 1.6667, 1.75, 2, 2.414, 3];
 const SPEED_SET = [1, -1, 1, -1, 1, -1, 0.5];
 const ERA_SET = [2, 4, 4, 4, 8, 8, 16];
+const WARM_SET = [0, 0.1, 0.2, 0.3, 0.3, 0.4, 0.5, 0.6];
+const WARM_EYES = [S.LOW, S.MID, S.HIGH, S.CENT, S.REEL, S.CLMP, S.L1, S.L2, S.L3, S.L4];
 
 /*
  * The same name always yields the same architecture. This is a design-time
@@ -283,12 +310,12 @@ export function deriveArch(word) {
   const list = [];
   for (let i = 0; i < nb; i++) list.push([range(1, 22), range(1, 4), range(0.3, 0.9)]);
   a.bank = { q: round(range(3, 11), 2), gains: bumps(list, round(range(0.05, 0.2))) };
-  a.homeo = { ceil: Math.round(range(3, 10)), strength: round(range(0.6, 1)), release: round(range(1, 4)), breath: round(range(0.15, 0.5)), depth: round(range(2.5, 5), 1), metab: 1 };
+  a.homeo = { ceil: Math.round(range(3, 10)), strength: round(range(0.6, 1)), release: round(range(1, 4)), breath: round(range(0.15, 0.5)), depth: round(range(2.5, 5), 1), metab: 1, temper: 0.6 };
   const pins = new Map();
   const nPins = 11 + Math.floor(r() * 9);
   for (let i = 0; i < nPins; i++) {
     const s = Math.floor(r() * SOURCES.length);
-    const d = Math.floor(r() * DESTS.length);
+    const d = Math.floor(r() * PIN_DESTS);
     // pitch pins stay gentle so derived webs drift rather than swoop
     const top = d <= D.P4 || d === D.TAPE || d === D.RSPD || d === D.SHFT ? 0.15 : 0.5;
     pins.set(`${s}:${d}`, [s, d, round((r() < 0.4 ? -1 : 1) * range(0.1, top), 2)]);
@@ -310,6 +337,11 @@ export function deriveArch(word) {
   a.reelToMult = round(range(0, 0.45));
   a.out = { loop: 0.9, dry: round(range(0.05, 0.2)), reels: round(range(0.25, 0.5)), space: round(range(0.2, 0.5)) };
   a.helm = { inflow: round(range(0.15, 0.45)), bias: 0, drift: 0, setpoint: Math.round(range(-25, -17)), coupling: 0.8, era: pick(ERA_SET), volume: 0.85 };
+  // Colour comes last, so every name keeps the web it always built and
+  // gains a leaning: some names run cold and metallic, some warm.
+  a.helm.warmth = pick(WARM_SET);
+  a.homeo.temper = pick([0.3, 0.5, 0.6, 0.6, 0.8]);
+  if (r() < 0.6) a.matrix.push([pick(WARM_EYES), D.WARM, round((r() < 0.35 ? -1 : 1) * range(0.3, 0.8), 2)]);
   return a;
 }
 
@@ -351,6 +383,7 @@ export function normalizeArch(input) {
     ceil: num(ceil, d.homeo.ceil, 0, 24), strength: num(H.strength, d.homeo.strength, 0, 1.5),
     release: num(H.release, d.homeo.release, 0.05, 30), breath: num(H.breath, d.homeo.breath, 0, 2),
     depth: num(H.depth, d.homeo.depth, 1, 24), metab: num(H.metab, d.homeo.metab, 0, 2),
+    temper: num(H.temper, d.homeo.temper, 0, 1),
   };
   if (Array.isArray(input.matrix)) {
     const seen = new Map();
@@ -386,8 +419,18 @@ export function normalizeArch(input) {
   a.helm = {
     inflow: num(h.inflow, d.helm.inflow, 0, 1.5), bias: num(h.bias, 0, -1, 1), drift: num(h.drift, 0, -24, 24),
     setpoint: num(h.setpoint, d.helm.setpoint, -48, -3), coupling: num(h.coupling, 1, 0, 2), era: num(h.era, d.helm.era, 0.25, 64),
-    volume: num(h.volume, d.helm.volume, 0, 1),
+    volume: num(h.volume, d.helm.volume, 0, 1), warmth: num(h.warmth, d.helm.warmth, 0, 1),
   };
+  // Before version 5 there was no warmth. A saved preset takes up the
+  // colour its preset now has; anything else gets the default leaning.
+  if ((input.v || 1) < 5) {
+    const p = PRESETS.find((x) => x.name === a.name);
+    if (p) {
+      const now = p.build();
+      a.helm.warmth = now.helm.warmth;
+      if (!a.matrix.some((m) => m[1] === D.WARM)) a.matrix.push(...now.matrix.filter((m) => m[1] === D.WARM));
+    }
+  }
   return a;
 }
 

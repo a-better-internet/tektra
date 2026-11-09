@@ -5,7 +5,7 @@
  * phase portrait (mid on the vertical, side on the horizontal). Modulation
  * arcs from the matrix glow with the voltage they carry.
  */
-import { theme, rgba, fit, dprOf } from './theme.js';
+import { theme, rgba, rgbOf, fit, dprOf } from './theme.js';
 import { SOURCES, DESTS } from '../state.js';
 
 const GROUPS = {
@@ -139,7 +139,7 @@ export class Observatory {
     this.last = now;
     const dpr = dprOf();
     const act = this.activity(frame);
-    this.drawPhase(scope, dpr);
+    this.drawPhase(scope, dpr, frame && frame.stat.length > 24 ? frame.stat[24] : 0);
 
     const ctx = this.fctx;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -335,7 +335,7 @@ export class Observatory {
     }
   }
 
-  drawPhase(scope, dpr) {
+  drawPhase(scope, dpr, warmth) {
     const ctx = this.bctx;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.globalCompositeOperation = 'destination-out';
@@ -353,7 +353,12 @@ export class Observatory {
     for (let i = 0; i < L.length; i += 4) pk = Math.max(pk, Math.abs(L[i]) + Math.abs(Rr[i]));
     this.pk = this.pk ? Math.max(pk, this.pk * 0.985) : pk;
     const k = (rEye * 0.95) / (this.pk * 0.7071);
-    ctx.strokeStyle = rgba(theme.signal, 0.07);
+    // the portrait takes the web's colour: ice when cold, ember when warm
+    const ice = rgbOf(theme.signal), ember = rgbOf(theme.warm), hi = rgbOf(theme['signal-hi']);
+    const w = Math.max(0, Math.min(1, warmth));
+    const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+    const line = mix(ice, ember, w), dot = mix(hi, ember, w * 0.8);
+    ctx.strokeStyle = `rgba(${line[0]},${line[1]},${line[2]},0.07)`;
     ctx.lineWidth = 0.8;
     ctx.beginPath();
     for (let i = 0; i < L.length; i++) {
@@ -362,7 +367,7 @@ export class Observatory {
       if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
     }
     ctx.stroke();
-    ctx.fillStyle = rgba(theme['signal-hi'], 0.1);
+    ctx.fillStyle = `rgba(${dot[0]},${dot[1]},${dot[2]},0.1)`;
     for (let i = 0; i < L.length; i += 3) {
       const l = L[i], r = Rr[i];
       ctx.fillRect(cx + (l - r) * 0.7071 * k - 0.6, cy - (l + r) * 0.7071 * k - 0.6, 1.2, 1.2);

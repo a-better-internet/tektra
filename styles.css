@@ -23,6 +23,7 @@
   --regulate: #ffad5a;
   --regulate-deep: #8a4b1c;
   --alarm: #ff7466;
+  --warm: #ffc48f;
 
   --f-display: "Michroma", "Eurostile", "Microgramma", "Arial Black", sans-serif;
   --f-ui: "Archivo", "Helvetica Neue", Arial, sans-serif;
@@ -275,6 +276,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   gap: 10px 6px;
   justify-items: center;
 }
+.helm__knobs .knob--row { grid-column: 1 / -1; }
 .helm__foot { display: flex; align-items: center; gap: 12px; }
 .trace { display: grid; gap: 4px; border-top: 1px solid var(--rule); padding-top: 10px; }
 .trace__cap {

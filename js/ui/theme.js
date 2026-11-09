@@ -1,7 +1,7 @@
 /* Canvas drawing reads its colours and faces from the page's CSS tokens. */
 
 export const theme = {};
-const KEYS = ['void', 'panel', 'panel-2', 'rule', 'rule-hi', 'ink', 'dim', 'faint', 'signal', 'signal-hi', 'signal-deep', 'regulate', 'regulate-deep', 'alarm'];
+const KEYS = ['void', 'panel', 'panel-2', 'rule', 'rule-hi', 'ink', 'dim', 'faint', 'signal', 'signal-hi', 'signal-deep', 'regulate', 'regulate-deep', 'alarm', 'warm'];
 
 export function readTheme() {
   const cs = getComputedStyle(document.documentElement);
