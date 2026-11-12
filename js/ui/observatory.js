@@ -16,12 +16,12 @@ const GROUPS = {
 
 const AUDIO = [
   ['g1', 'm1'], ['g2', 'm1'], ['m1', 'm2'], ['g3', 'm2'], ['m2', 'm3'], ['g4', 'm3'], ['m3', 'm4'], ['m4', 'tape'],
-  ['tape', 'bank', 'arc'], ['bank', 'shift', 'arc'], ['shift', 'smear', 'arc'], ['smear', 'tape', 'arc'],
+  ['tape', 'bank', 'arc'], ['bank', 'shift', 'arc'], ['shift', 'exc', 'arc'], ['exc', 'harm', 'arc'], ['harm', 'smear', 'arc'], ['smear', 'tape', 'arc'],
   ['smear', 'm4', 'fb'], ['smear', 'out'], ['m4', 'out', 'dry'],
   ['r1', 'tape', 'reel'], ['r2', 'tape', 'reel'], ['r3', 'tape', 'reel'], ['r4', 'tape', 'reel'],
 ];
 
-const LOOP_ANGLE = { tape: Math.PI, bank: -Math.PI / 2, shift: 0, smear: Math.PI / 2 };
+const LOOP_ANGLE = { tape: Math.PI, bank: -Math.PI / 2, shift: 0, exc: Math.PI / 8, harm: Math.PI / 4, smear: Math.PI / 2 };
 
 function fmtHz(v) {
   const a = Math.abs(v);
@@ -279,6 +279,8 @@ export class Observatory {
     node('tape', 'TAPE', 9, { align: 'right', sub: frame ? `${frame.stat[5].toFixed(2)} s` : `${a.loop.time.toFixed(2)} s` });
     node('bank', 'BANK', 9, { align: 'left', sub: '1/3 oct' });
     node('shift', 'SHIFT', 9, { align: 'left', sub: frame ? `${frame.stat[6] >= 0 ? '+' : '−'}${Math.abs(frame.stat[6]).toFixed(2)} Hz` : '' });
+    node('exc', 'EXCITE', 6, { align: 'left', sub: `${Math.round(a.exciter.amount * 100)}% · ${fmtHz(a.exciter.freq)} Hz` });
+    node('harm', 'HARM', 6, { align: 'left', sub: `${a.harm.a > 0 ? '+' : a.harm.a < 0 ? '−' : ''}${Math.abs(a.harm.a)} ${a.harm.b > 0 ? '+' : a.harm.b < 0 ? '−' : ''}${Math.abs(a.harm.b)} · ${Math.round(a.harm.mix * 100)}%` });
     node('smear', 'SMEAR', 9, { align: 'left', sub: frame ? `loop ${frame.stat[0].toFixed(0)} dB` : '' });
     node('out', 'OUT', 8, { align: 'center', sub: frame ? `${frame.stat[1].toFixed(0)} dB` : '' });
     for (let i = 0; i < 4; i++) {

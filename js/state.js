@@ -48,6 +48,9 @@ export const DESTS = [
   { code: 'R4', name: 'Reel 4 level', group: 3, node: 'r4' },
   { code: 'RSPD', name: 'Reel speed', group: 3, node: 'reels' },
   { code: 'WARM', name: 'Warmth', group: 4, node: 'gens' },
+  { code: 'SHAP', name: 'Wave shaper', group: 4, node: 'gens' },
+  { code: 'EXCT', name: 'Exciter', group: 4, node: 'exc' },
+  { code: 'HARM', name: 'Harmonizer mix', group: 4, node: 'harm' },
 ];
 // Derived webs pin only the first 18, so names keep the webs they always had.
 const PIN_DESTS = 18;
@@ -94,7 +97,7 @@ const pin = (s, d, a) => [S[s], D[d], a];
 
 export function defaultArch() {
   return {
-    v: 5,
+    v: 6,
     name: 'Drift Nebula',
     gens: [{ f: 92.5, fold: 0.7 }, { f: 138.6, fold: 0.5 }, { f: 207.7, fold: 0.8 }, { f: 349.2, fold: 0.4 }],
     sync: 0.15,
@@ -113,6 +116,8 @@ export function defaultArch() {
       pin('FLUX', 'TAPE', 0.12), pin('CLMP', 'ROT', 0.35), pin('OUT', 'SMR', -0.3), pin('MID', 'TILT', 0.15),
       pin('L1', 'R1', 0.5), pin('L2', 'R2', 0.5), pin('L3', 'R3', 0.45), pin('L4', 'MULT', -0.25),
       pin('REEL', 'FOLD', 0.3), pin('CLMP', 'FDBK', -0.2), pin('HIGH', 'TILT', -0.2),
+      // duller than usual, the exciter wakes; gate 2 opens the harmonizer
+      pin('CENT', 'EXCT', -0.35), pin('L2', 'HARM', 0.3), pin('LOW', 'SHAP', 0.25),
     ],
     gates: [
       { a: S.CENT, b: -1, mode: 'gt', h: 0.1, k: 0.2 },
@@ -130,6 +135,11 @@ export function defaultArch() {
     ],
     reelToLoop: 0.5,
     reelToMult: 0.25,
+    // Timbre: harmonics shaped into every generator, harmonics excited from
+    // every pass, and two harmonizer voices at just intervals inside the loop
+    shape: { amount: 0.3, odd: 0.3 },
+    exciter: { amount: 0.12, freq: 700 },
+    harm: { mix: 0.2, a: 7, b: -12, window: 0.09 },
     liveIn: 0,
     out: { loop: 0.9, dry: 0.08, reels: 0.35, space: 0.35 },
     helm: { inflow: 0.2, bias: 0, drift: 0, setpoint: -20, coupling: 0.8, era: 4, volume: 0.85, warmth: 0.25 },
@@ -164,6 +174,9 @@ export const PRESETS = [
     a.helm.era = 8;
     a.helm.setpoint = -21;
     a.helm.warmth = 0.75;
+    a.shape = { amount: 0.3, odd: 0 };
+    a.exciter = { amount: 0, freq: 900 };
+    a.harm = { mix: 0.2, a: 12, b: -12, window: 0.12 };
   }),
   variant('Iron Weather', 'Restless. Inharmonic generators, deep multiplication and narrow bands: metallic squalls that ring and clamp.', (a) => {
     a.glide = 2;
@@ -178,6 +191,9 @@ export const PRESETS = [
     a.helm.era = 1;
     a.helm.setpoint = -22;
     a.helm.warmth = 0.1;
+    a.shape = { amount: 0.55, odd: 0.7 };
+    a.exciter = { amount: 0.3, freq: 1600 };
+    a.harm = { mix: 0.3, a: 3, b: -7, window: 0.05 };
   }),
   variant('Breathing Engine', 'Restless. Near-unison generators lock and unlock; a short loop and a fast homeostat give it a pulse.', (a) => {
     a.glide = 1.5;
@@ -192,6 +208,9 @@ export const PRESETS = [
     a.helm.setpoint = -22;
     a.helm.warmth = 0.25;
     a.out.loop = 0.75;
+    a.shape = { amount: 0.35, odd: 0.5 };
+    a.exciter = { amount: 0.1, freq: 1200 };
+    a.harm = { mix: 0.15, a: 12, b: -12, window: 0.07 };
   }),
   variant('Relay Choir', 'Logic gates hand the material between self-recording reels at different speeds.', (a) => {
     a.glide = 8;
@@ -208,6 +227,9 @@ export const PRESETS = [
     a.homeo.temper = 0.7;
     a.helm.era = 4;
     a.helm.warmth = 0.3;
+    a.shape = { amount: 0.25, odd: 0.2 };
+    a.exciter = { amount: 0.08, freq: 1000 };
+    a.harm = { mix: 0.3, a: 4, b: -5, window: 0.11 };
   }),
   variant('Gas Giant', 'Very low generators, a long tape and a slowly widening shifter inside heavy smear. The slowest.', (a) => {
     a.glide = 20;
@@ -219,6 +241,9 @@ export const PRESETS = [
     a.helm.era = 16;
     a.helm.setpoint = -19;
     a.helm.warmth = 0.55;
+    a.shape = { amount: 0.45, odd: 0.2 };
+    a.exciter = { amount: 0.08, freq: 700 };
+    a.harm = { mix: 0.2, a: 12, b: 19, window: 0.13 };
   }),
   variant('Cold Lattice', 'High, sparse and glassy. Little folding, very narrow bands, an almost still shift.', (a) => {
     a.glide = 15;
@@ -231,9 +256,15 @@ export const PRESETS = [
     a.helm.era = 8;
     a.helm.setpoint = -24;
     a.helm.warmth = 0;
+    a.shape = { amount: 0.1, odd: 0.8 };
+    a.exciter = { amount: 0.15, freq: 2200 };
+    a.harm = { mix: 0.25, a: 12, b: 24, window: 0.08 };
   }),
   variant('Open Web', 'Lightly patched and moderately set. A starting point for building your own architecture.', (a) => {
     a.matrix = [pin('CLMP', 'ROT', 0.4), pin('FLUX', 'TAPE', 0.2), pin('L1', 'R1', 0.5)];
+    a.shape = { amount: 0.2, odd: 0.3 };
+    a.exciter = { amount: 0.06, freq: 1100 };
+    a.harm = { mix: 0.1, a: 7, b: -12, window: 0.09 };
     a.reels = [
       { mode: 'self', len: 8, level: 0.3, speed: 1, rec: 0 },
       { mode: 'off', len: 8, level: 0.3, speed: 1, rec: -1 },
@@ -269,6 +300,8 @@ const SPEED_SET = [1, -1, 1, -1, 1, -1, 0.5];
 const ERA_SET = [2, 4, 4, 4, 8, 8, 16];
 const WARM_SET = [0, 0.1, 0.2, 0.3, 0.3, 0.4, 0.5, 0.6];
 const WARM_EYES = [S.LOW, S.MID, S.HIGH, S.CENT, S.REEL, S.CLMP, S.L1, S.L2, S.L3, S.L4];
+const HARM_UP = [3, 4, 5, 7, 7, 12, 12, 19];
+const HARM_DOWN = [-5, -7, -12, -12, -19, -24];
 
 /*
  * The same name always yields the same architecture. This is a design-time
@@ -342,6 +375,11 @@ export function deriveArch(word) {
   a.helm.warmth = pick(WARM_SET);
   a.homeo.temper = pick([0.3, 0.5, 0.6, 0.6, 0.8]);
   if (r() < 0.6) a.matrix.push([pick(WARM_EYES), D.WARM, round((r() < 0.35 ? -1 : 1) * range(0.3, 0.8), 2)]);
+  // Timbre comes after colour, for the same reason.
+  a.shape = { amount: round(range(0, 0.4)), odd: round(r()) };
+  a.exciter = { amount: round(range(0, 0.2)), freq: Math.round(range(700, 2500)) };
+  a.harm = { mix: round(range(0, 0.35)), a: pick(HARM_UP), b: pick(HARM_DOWN), window: round(range(0.06, 0.12)) };
+  if (r() < 0.6) a.matrix.push([pick(WARM_EYES), pick([D.SHAP, D.EXCT, D.HARM]), round((r() < 0.35 ? -1 : 1) * range(0.2, 0.5), 2)]);
   return a;
 }
 
@@ -413,6 +451,13 @@ export function normalizeArch(input) {
   a.reelToLoop = num(input.reelToLoop, d.reelToLoop, 0, 1.5);
   a.reelToMult = num(input.reelToMult, d.reelToMult, 0, 1.5);
   a.liveIn = num(input.liveIn, d.liveIn, 0, 1.5);
+  const Sh = input.shape || {}, Ex = input.exciter || {}, Hm = input.harm || {};
+  a.shape = { amount: num(Sh.amount, d.shape.amount, 0, 1), odd: num(Sh.odd, d.shape.odd, 0, 1) };
+  a.exciter = { amount: num(Ex.amount, d.exciter.amount, 0, 1), freq: num(Ex.freq, d.exciter.freq, 400, 4000) };
+  a.harm = {
+    mix: num(Hm.mix, d.harm.mix, 0, 0.9), a: Math.round(num(Hm.a, d.harm.a, -24, 24)), b: Math.round(num(Hm.b, d.harm.b, -24, 24)),
+    window: num(Hm.window, d.harm.window, 0.03, 0.15),
+  };
   const O = input.out || {};
   a.out = { loop: num(O.loop, d.out.loop, 0, 1.5), dry: num(O.dry, d.out.dry, 0, 1.5), reels: num(O.reels, d.out.reels, 0, 1.5), space: num(O.space, d.out.space, 0, 1.5) };
   const h = input.helm || {};
@@ -423,6 +468,20 @@ export function normalizeArch(input) {
   };
   // Before version 5 there was no warmth. A saved preset takes up the
   // colour its preset now has; anything else gets the default leaning.
+  // Before version 6 there was no shaper, exciter or harmonizer. A saved
+  // preset takes them up as its preset now has them; anything else keeps
+  // the sound it had, with all three at zero.
+  if ((input.v || 1) < 6) {
+    const p = PRESETS.find((x) => x.name === a.name);
+    const now = p ? p.build() : null;
+    a.shape = now ? now.shape : { ...a.shape, amount: 0 };
+    a.exciter = now ? now.exciter : { ...a.exciter, amount: 0 };
+    a.harm = now ? now.harm : { ...a.harm, mix: 0 };
+    if (now) {
+      const mine = new Set(a.matrix.map((m) => `${m[0]}:${m[1]}`));
+      for (const m of now.matrix) if (m[1] >= D.SHAP && !mine.has(`${m[0]}:${m[1]}`)) a.matrix.push(m);
+    }
+  }
   if ((input.v || 1) < 5) {
     const p = PRESETS.find((x) => x.name === a.name);
     if (p) {

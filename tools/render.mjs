@@ -265,6 +265,10 @@ for (let b = 0; b < total; b++) {
   prevTape = proc.tapeS;
   if (proc.limG < 0.75) note(tSec, 'limiter working hard');
   if (Math.max(proc.P[4], proc.P[5], proc.P[6], proc.P[7]) > 1.1) note(tSec, 'sharp generator edges (fold above 1.1)');
+  // a bend this sharp in the generators' own product is their waveform (fold
+  // or the shaper), already there before anything downstream touches it
+  if (proc.xEdge > 0.25) note(tSec, 'sharp generator peak');
+  proc.xEdge = 0;
 
   {
     const lg = proc.limG, gg = proc.govG ?? 1, ag = proc.alcG ?? 1;
@@ -533,11 +537,11 @@ const near = (t) => {
 };
 for (const c of clicks) if (c.t !== undefined && near(c.t).includes('synthetic step')) injectFound++;
 const flagged = clicks.filter((c) => !near(c.t).includes('synthetic step'));
-const isEdge = (c) => near(c.t).includes('sharp generator edges');
+const isEdge = (c) => near(c.t).includes('sharp generator');
 const edges = flagged.filter(isEdge);
 const real = flagged.filter((c) => !isEdge(c));
 console.log(`Clicks: ${real.length} found (${((real.length / opt.seconds) * 60).toFixed(2)} per minute) at ratio ${opt.ratio}.`);
-if (edges.length) console.log(`  Not counted: ${edges.length} sharp sawtooth edges while generator fold was above 1.1 (timbre, not a fault).`);
+if (edges.length) console.log(`  Not counted: ${edges.length} sharp edges or peaks in the generators' own waveform, from fold or the shaper, present before any processing (timbre, not a fault).`);
 if (opt.inject) console.log(`  Detector check: ${injectFound} of ${injected} synthetic steps found.`);
 const byCause = new Map();
 for (const c of real) { const k = near(c.t); byCause.set(k, (byCause.get(k) || 0) + 1); }

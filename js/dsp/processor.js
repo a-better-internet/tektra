@@ -18,7 +18,7 @@ const NB = 24;
 const BAND_HZ = [63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800,
   1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500];
 const NSRC = 14;
-const NDST = 19;
+const NDST = 22;
 const CR = 32;            // control period, samples
 const FRAME_BLOCKS = 12;  // analysis frame every 12 render quanta (~30 Hz)
 const TWO_PI = 2 * Math.PI;
@@ -33,7 +33,8 @@ const S_CASC = 0, S_LOOP = 1, S_OUT = 2, S_REEL = 3, S_LOW = 4, S_MID = 5,
   S_HIGH = 6, S_CENT = 7, S_FLUX = 8, S_CLMP = 9, S_L1 = 10;
 // Destinations (the system's hands)
 const D_P1 = 0, D_FOLD = 4, D_SYNC = 5, D_MULT = 6, D_TAPE = 7, D_TILT = 8,
-  D_ROT = 9, D_SHFT = 10, D_SMR = 11, D_FDBK = 12, D_R1 = 13, D_RSPD = 17, D_WARM = 18;
+  D_ROT = 9, D_SHFT = 10, D_SMR = 11, D_FDBK = 12, D_R1 = 13, D_RSPD = 17, D_WARM = 18,
+  D_SHAPE = 19, D_EXCT = 20, D_HARM = 21;
 // Helm (the steersman's controls)
 const HELM_KEYS = ['inflow', 'bias', 'drift', 'setpoint', 'coupling', 'era', 'volume', 'warmth'];
 const H_INFLOW = 0, H_BIAS = 1, H_DRIFT = 2, H_SET = 3, H_COUP = 4, H_ERA = 5, H_VOL = 6, H_WARM = 7;
@@ -42,7 +43,7 @@ const R_GF = 0, R_FOLD = 4, R_SYNC = 8, R_D = 9, R_DRIVE = 13, R_DL = 14,
   R_DR = 15, R_SHL = 16, R_SHR = 17, R_SMR = 18, R_FB = 19, R_IN = 20,
   R_R2L = 21, R_R2M = 22, R_RLV = 23, R_RSP = 27, R_VOL = 31, R_PM = 32,
   R_OLOOP = 33, R_ODRY = 34, R_OREEL = 35, R_OSPACE = 36, R_REC = 37,
-  R_LIVE = 41, NRAMP = 42;
+  R_LIVE = 41, R_EXC = 42, R_HMIX = 43, R_HWIN = 44, NRAMP = 45;
 
 const REEL_PAN_L = [0.92, 0.38, 0.8, 0.55];
 const REEL_PAN_R = [0.38, 0.92, 0.55, 0.8];
@@ -207,6 +208,138 @@ class TruePeak {
   clear() { this.b.fill(0); }
 }
 
+/* Transposed direct-form II biquad (RBJ cookbook). */
+class Biquad {
+  constructor() { this.b0 = 1; this.b1 = 0; this.b2 = 0; this.a1 = 0; this.a2 = 0; this.z1 = 0; this.z2 = 0; }
+  set(kind, f, q, sr) {
+    const w = TWO_PI * f / sr, c = Math.cos(w), al = Math.sin(w) / (2 * q), a0 = 1 + al;
+    const k = kind === 'hp' ? (1 + c) / 2 : (1 - c) / 2;
+    this.b0 = k / a0; this.b1 = (kind === 'hp' ? -2 * k : 2 * k) / a0; this.b2 = k / a0;
+    this.a1 = -2 * c / a0; this.a2 = (1 - al) / a0;
+    return this;
+  }
+  run(x) {
+    const y = this.b0 * x + this.z1;
+    this.z1 = this.b1 * x - this.a1 * y + this.z2;
+    this.z2 = this.b2 * x - this.a2 * y;
+    return y;
+  }
+  clear() { this.z1 = this.z2 = 0; }
+}
+
+/* Exciter: the band above its corner (and below 5.2 kHz) is normalised by
+ * its own envelope and bent through Chebyshev polynomials, which make its
+ * second and third harmonics and nothing higher, so nothing can fold back
+ * past the Nyquist limit. What comes out is scaled back to the band's level
+ * and high-passed, leaving only the new harmonics. The envelope looks 1 ms
+ * ahead and moves smoothly, like the limiter's, so it is always above the
+ * band without ever bending the result. */
+class Exciter {
+  constructor(sr) {
+    this.sr = sr;
+    this.h1 = new Biquad(); this.h2 = new Biquad();
+    this.l1 = new Biquad().set('lp', 5200, 0.5412, sr);
+    this.l2 = new Biquad().set('lp', 5200, 1.3066, sr);
+    this.N = Math.max(8, Math.round(sr * 0.001));
+    this.buf = new Float64Array(64); this.bi = 0;
+    this.pk = 0; this.hold = 0; this.e1 = 0; this.env = 0;
+    this.atk = 1 - Math.exp(-7 / this.N); this.rel = coef(0.05, sr); this.dec = Math.exp(-1 / (0.05 * sr));
+    this.tune(1000);
+  }
+  tune(f) { this.h1.set('hp', f, 0.7071, this.sr); this.h2.set('hp', f * 1.6, 0.7071, this.sr); }
+  run(x) {
+    const b = this.l2.run(this.l1.run(this.h1.run(x)));
+    const a = b < 0 ? -b : b;
+    if (a >= this.pk) { this.pk = a; this.hold = this.N; }
+    else if (this.hold > 0) this.hold--;
+    else this.pk *= this.dec;
+    this.e1 += (this.pk - this.e1) * (this.pk > this.e1 ? this.atk : this.rel);
+    this.env += (this.e1 - this.env) * (this.e1 > this.env ? this.atk : this.rel);
+    const bi = this.bi, bd = this.buf[(bi + 64 - this.N) & 63];
+    this.buf[bi] = b; this.bi = (bi + 1) & 63;
+    const e = this.env * 1.25 + 1e-7;
+    let u = bd / e;
+    // the look-ahead keeps |u| near 0.8 at most; a rare overshoot is rounded, never cornered
+    if (u > 0.95) u = u > 1.45 ? 1.2 : 0.95 + (u - 0.95) - (u - 0.95) * (u - 0.95);
+    else if (u < -0.95) u = u < -1.45 ? -1.2 : -0.95 + (u + 0.95) + (u + 0.95) * (u + 0.95);
+    const u2 = u * u;
+    return this.h2.run(e * (0.55 * (2 * u2 - 1) + 0.45 * u * (4 * u2 - 3)));
+  }
+  clear() { this.h1.clear(); this.h2.clear(); this.l1.clear(); this.l2.clear(); this.buf.fill(0); this.pk = this.e1 = this.env = 0; this.hold = 0; }
+}
+
+/* Harmonizer: two pitch-shifted voices of the loop, at just intervals.
+ * Each voice reads a short delay line through three heads a third of a
+ * window apart; each head sweeps its delay at the rate that gives the new
+ * pitch and fades in and out on a sine-squared window, so the three always
+ * sum to a steady level and no head is ever heard jumping back. What goes
+ * in is low-passed below the Nyquist limit divided by the highest voice's
+ * ratio, so a voice pitched up never folds its top back down as aliasing. */
+const HWN = 2048;
+const HWIN = new Float64Array(HWN + 2);
+for (let i = 0; i <= HWN + 1; i++) { const v = Math.sin(Math.PI * Math.min(1, i / HWN)); HWIN[i] = v * v; }
+const HBUF = 8192;
+class Harmonizer {
+  constructor(sr) {
+    this.sr = sr; this.fc = 0;
+    this.f = [0, 1, 2, 3, 4, 5, 6, 7].map(() => new Biquad());
+    this.limit(1);
+    this.bL = new Float32Array(HBUF); this.bR = new Float32Array(HBUF);
+    this.w = 0; this.pA = 0; this.pB = 0;
+    this.outL = 0; this.outR = 0; this.vl = 0; this.vr = 0;
+  }
+  limit(ratio) {
+    // eighth-order Butterworth, its corner well inside the limit
+    const fc = Math.min(20000, (0.38 * this.sr) / Math.max(1, ratio));
+    if (Math.abs(fc - this.fc) < 1) return;
+    this.fc = fc;
+    const Q = [0.5098, 0.6013, 0.9000, 2.5629];
+    for (let k = 0; k < 4; k++) { this.f[k].set('lp', fc, Q[k], this.sr); this.f[k + 4].set('lp', fc, Q[k], this.sr); }
+  }
+  write(l, r) {
+    const f = this.f;
+    this.bL[this.w] = f[3].run(f[2].run(f[1].run(f[0].run(l))));
+    this.bR[this.w] = f[7].run(f[6].run(f[5].run(f[4].run(r))));
+    this.w = (this.w + 1) & (HBUF - 1);
+  }
+  voice(p, W) {
+    const bL = this.bL, bR = this.bR, w = this.w;
+    let l = 0, r = 0;
+    for (let k = 0; k < 3; k++) {
+      let q = p + k / 3;
+      if (q >= 1) q -= 1;
+      let pos = w - 64 - q * W;
+      if (pos < 0) pos += HBUF;
+      const i = pos | 0, f = pos - i, i1 = (i + 1) & (HBUF - 1);
+      const t = q * HWN, ti = t | 0;
+      const g = HWIN[ti] + (HWIN[ti + 1] - HWIN[ti]) * (t - ti);
+      l += g * (bL[i] + (bL[i1] - bL[i]) * f);
+      r += g * (bR[i] + (bR[i1] - bR[i]) * f);
+    }
+    this.vl = l * (2 / 3); this.vr = r * (2 / 3);
+  }
+  run(l, r, rA, rB, W) {
+    this.write(l, r);
+    this.voice(this.pA, W);
+    let ol = this.vl, or = this.vr;
+    this.voice(this.pB, W);
+    ol += this.vl; or += this.vr;
+    this.outL = ol * Math.SQRT1_2; this.outR = or * Math.SQRT1_2;
+    // a delay that shrinks raises the pitch: d' = 1 - ratio
+    let pa = this.pA + (1 - rA) / W; pa -= Math.floor(pa); this.pA = pa;
+    let pb = this.pB + (1 - rB) / W; pb -= Math.floor(pb); this.pB = pb;
+  }
+  clear() { this.bL.fill(0); this.bR.fill(0); this.outL = this.outR = 0; for (const b of this.f) b.clear(); }
+}
+
+// Just intervals for the harmonizer, by semitone; anything else is equal-tempered.
+const JUST = { '-24': 1 / 4, '-19': 1 / 3, '-17': 3 / 8, '-12': 1 / 2, '-9': 3 / 5, '-8': 5 / 8, '-7': 2 / 3, '-5': 3 / 4, '-4': 4 / 5, '-3': 5 / 6,
+  0: 1, 3: 6 / 5, 4: 5 / 4, 5: 4 / 3, 7: 3 / 2, 8: 8 / 5, 9: 5 / 3, 12: 2, 15: 12 / 5, 16: 5 / 2, 19: 3, 24: 4 };
+function ratioOf(st) {
+  const k = Math.round(clamp(+st || 0, -24, 24));
+  return JUST[k] !== undefined ? JUST[k] : Math.pow(2, k / 12);
+}
+
 /* Allpass-pair Hilbert transformer: i and q are 90 degrees apart. */
 const HA = [0.6923878, 0.9360654322959, 0.9882295226860, 0.9987488452737].map((a) => a * a);
 const HB = [0.4021921162426, 0.8561710882420, 0.9722909545651, 0.9952884791278].map((a) => a * a);
@@ -322,6 +455,15 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.hIm = new Float64Array(NB * NB);
     this.normTick = 0;
 
+    // Wave shaper: per generator, the weights of harmonics 1-6 (ramped per sample)
+    this.shapeBase = 0; this.shapeOdd = 0; this.shapeOn = false;
+    this.sw = new Float64Array(24); this.swD = new Float64Array(24); this.swT = new Float64Array(6);
+    for (let i = 0; i < 4; i++) this.sw[i * 6] = 1;
+    // Exciter and harmonizer, in the loop after the shifter
+    this.exL = new Exciter(sr); this.exR = new Exciter(sr); this.excBase = 0; this.excF = 1000;
+    this.harm = new Harmonizer(sr); this.harmBase = 0; this.harmWin = 0.09;
+    this.harmRA = 2; this.harmRB = 0.5; this.lrA = Math.log(2); this.lrB = Math.log(0.5); this.hWinS = 0.09 * sr;
+
     // Shifter and smear
     this.hL = new Hilbert(); this.hR = new Hilbert();
     this.shPL = 0; this.shPR = 0;
@@ -349,7 +491,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.shelfL = 0; this.shelfR = 0; this.shelfG = 0; this.shelfK = coef(1 / (TWO_PI * 1800), sr);
     this.govEnv = 0; this.govG = 1;
     this.cmpEnv = 0; this.cmpG = 1; this.cmpT = 1;
-    this.cascEnv = 0.25; this.cascG = 1; this.cascT = 1;
+    this.cascEnv = 0.25; this.cascG = 1; this.cascT = 1; this.xm1 = 0; this.xm2 = 0; this.xEdge = 0;
     this.lvlEnv = 0; this.lvlRef = 0; this.lvlG = 1; this.lvlT = 1;
     this.tpL = new TruePeak(); this.tpR = new TruePeak();
     this.recOn = false; this.recBuf = null; this.recW = 0;
@@ -411,6 +553,8 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     // start at the architecture's own helm rather than gliding in from defaults
     this.helmA.set(this.helmT);
     this.warmA = this.helmT[H_WARM];
+    this.hWinS = this.harmWin * sr;
+    this.lrA = Math.log(this.harmRA); this.lrB = Math.log(this.harmRB);
     // a web that leans cold first turns warm, and one that leans warm first cools
     this.tDir = this.warmA < 0.5 ? 1 : -1;
     if (this.bankQ === 0) this.setBank(4.32);
@@ -436,6 +580,18 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       }
     }
     this.syncBase = clamp(+a.sync || 0, 0, 1);
+    const Sh = a.shape || {};
+    this.shapeBase = clamp(+Sh.amount || 0, 0, 1);
+    this.shapeOdd = clamp(+Sh.odd || 0, 0, 1);
+    const Ex = a.exciter || {};
+    this.excBase = clamp(+Ex.amount || 0, 0, 1);
+    const ef = clamp(+Ex.freq || 1000, 400, 4000);
+    if (ef !== this.excF) { this.excF = ef; this.exL.tune(ef); this.exR.tune(ef); }
+    const Hm = a.harm || {};
+    this.harmBase = clamp(+Hm.mix || 0, 0, 1);
+    this.harmRA = ratioOf(Hm.a === undefined ? 12 : Hm.a);
+    this.harmRB = ratioOf(Hm.b === undefined ? -12 : Hm.b);
+    this.harmWin = clamp(+Hm.window || 0.09, 0.03, 0.15);
     this.glide = a.glide === undefined ? 10 : clamp(+a.glide, 0.05, 60);
     this.hold = a.hold === undefined ? 0.85 : clamp(+a.hold, 0, 1);
     this.pmBase = clamp(+a.pm || 0, 0, 1);
@@ -702,6 +858,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.hL.clear(); this.hR.clear(); this.shPL = this.shPR = 0;
     this.smear.clear(); this.space.clear();
     this.shelfL = this.shelfR = 0;
+    this.exL.clear(); this.exR.clear(); this.harm.clear();
     this.lastL = this.lastR = 0;
     this.envCasc = this.envLoop = this.envOut = this.envReel = 0;
     this.loopDb = -90; this.loopSlow = -60; this.trim = 0; this.fastG = 1;
@@ -711,7 +868,7 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.limBufL.fill(0); this.limBufR.fill(0); this.limG1 = 1;
     this.govEnv = 0; this.govG = 1; this.tpL.clear(); this.tpR.clear();
     this.cmpEnv = 0; this.cmpG = 1; this.cmpT = 1;
-    this.cascEnv = 0.25; this.cascG = 1; this.cascT = 1;
+    this.cascEnv = 0.25; this.cascG = 1; this.cascT = 1; this.xm1 = 0; this.xm2 = 0; this.xEdge = 0;
     this.lvlEnv = 0; this.lvlRef = 0; this.lvlG = 1; this.lvlT = 1;
     this.md.fill(0); this.mdG.fill(0); this.gState.fill(0); this.gCmp.fill(0); this.gS.fill(0); this.habitSet.fill(0);
     this.recEnv = 0; this.recAlc = 1;
@@ -1065,6 +1222,29 @@ class KybernetesProcessor extends AudioWorkletProcessor {
       // warm generators fold less: rounder waveforms
       this.ramp(R_FOLD + i, clamp(this.gFold[i] + md[D_FOLD] * 0.7, 0, 2.6) * (1 - 0.45 * wm));
     }
+    // ---- wave shaper: each generator's sine through a polynomial curve.
+    // A unit sine through the n-th Chebyshev polynomial is exactly its n-th
+    // harmonic, so the shaper adds partials 2-6 and nothing else; any that
+    // would pass 15 kHz fade out, so it can never alias. Odd leaves out the
+    // even harmonics, for a hollower tone. ----
+    {
+      const sAmt = clamp(this.shapeBase + md[D_SHAPE] * 0.5, 0, 1) * (1 - 0.3 * wm);
+      const odd = this.shapeOdd, sw = this.sw, swD = this.swD;
+      this.shapeOn = sAmt > 0.002 || sw[1] + sw[2] + sw[7] + sw[8] + sw[13] + sw[14] + sw[19] + sw[20] > 1e-4;
+      for (let i = 0; i < 4; i++) {
+        const f = P[R_GF + i] + this.dP[R_GF + i] * CR;
+        let e2 = 1;
+        const tgt = this.swT;
+        tgt[0] = 1;
+        for (let n = 2; n <= 6; n++) {
+          const band = clamp((15000 - n * f) / 3000, 0, 1);
+          tgt[n - 1] = sAmt > 0 ? Math.pow(sAmt, 0.75 * (n - 1)) / n * (n & 1 ? 1 : 1 - odd) * band : 0;
+          e2 += tgt[n - 1] * tgt[n - 1];
+        }
+        const nrm = 1 / Math.sqrt(e2);
+        for (let n = 0; n < 6; n++) swD[i * 6 + n] = (tgt[n] * nrm - sw[i * 6 + n]) / CR;
+      }
+    }
     for (let i = 0; i < 4; i++) {
       const j = (i + 3) & 3;
       const lr = Math.log(P[R_GF + i] / P[R_GF + j]);
@@ -1104,6 +1284,19 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     this.ramp(R_SHL, sh);
     this.ramp(R_SHR, sh * (1 - 2 * this.shiftSpread));
     this.ramp(R_SMR, clamp(this.smearBase + md[D_SMR] * 0.4 + 0.2 * wm * (1 - this.smearBase), 0, 0.95));
+    // Exciter: up to the band's own level in new harmonics; warmth lets it go.
+    this.ramp(R_EXC, clamp(this.excBase + md[D_EXCT] * 0.6, 0, 1) * (1 - 0.7 * wm));
+    // Harmonizer: how much of the loop passes through its two voices. The
+    // intervals and window glide, so changing them never jumps.
+    this.ramp(R_HMIX, clamp(this.harmBase + md[D_HARM] * 0.4, 0, 0.9));
+    this.hWinS += (this.harmWin * this.sr - this.hWinS) * coef(0.4, crHz);
+    this.ramp(R_HWIN, this.hWinS);
+    {
+      const kI = coef(0.4, crHz);
+      this.lrA += (Math.log(this.harmRA) - this.lrA) * kI;
+      this.lrB += (Math.log(this.harmRB) - this.lrB) * kI;
+      this.harm.limit(Math.exp(Math.max(this.lrA, this.lrB)));
+    }
     // Outside the loop, so it never compounds: a gentle shelf above 1.8 kHz
     // and a darker room.
     this.shelfG = 0.6 * wm;
@@ -1245,7 +1438,8 @@ class KybernetesProcessor extends AudioWorkletProcessor {
 
     const P = this.P, dP = this.dP;
     const ph = this.ph, gy = this.gy, gy2 = this.gy2, rp = this.rp, rq = this.rq;
-    const rpH = this.rpH, rqH = this.rqH;
+    const rpH = this.rpH, rqH = this.rqH, sw = this.sw, swD = this.swD;
+    const exL = this.exL, exR = this.exR, harm = this.harm;
     const b0a = this.b0, a1a = this.a1, a2a = this.a2;
     const zl1 = this.zl1, zl2 = this.zl2, zr1 = this.zr1, zr2 = this.zr2;
     const benv = this.benv, bg = this.bg, dbg = this.dbg;
@@ -1262,13 +1456,15 @@ class KybernetesProcessor extends AudioWorkletProcessor {
     const kGovA = coef(0.3, sr), kGovR = coef(20, sr), kGovDown = coef(3, sr), kGovUp = coef(30, sr);
     const kCmpA = coef(0.002, sr), kCmpR = coef(0.25, sr), kCmpGA = coef(0.006, sr), kCmpGR = coef(0.35, sr);
     const kLevA = coef(0.3, sr), kLevR = coef(1.5, sr), kLevG = coef(0.5, sr);
-    const kAgcA = coef(0.05, sr), kAgcR = coef(0.5, sr), kAgcG = coef(0.3, sr);
+    const kAgcA = coef(0.05, sr), kAgcR = coef(0.5, sr), kAgcG = coef(0.3, sr)
     const kRecA = coef(0.01, sr), kRecR = coef(0.6, sr);
 
     for (let off = 0; off < n; off += CR) {
       this.control();
       const end = off + CR < n ? off + CR : n;
       const tune = this.tune, shelfG = this.shelfG, shelfK = this.shelfK;
+      const shapeOn = this.shapeOn;
+      const rA = Math.exp(this.lrA), rB = Math.exp(this.lrB);
       for (let s = off; s < end; s++) {
         for (let i = 0; i < NRAMP; i++) P[i] += dP[i];
 
@@ -1329,8 +1525,16 @@ class KybernetesProcessor extends AudioWorkletProcessor {
           let phi = ph[i] + (f + c) * invSr;
           phi -= Math.floor(phi);
           ph[i] = phi;
-          const y = Math.sin(TWO_PI * phi + P[R_FOLD + i] * (gy[i] + gy2[i]) * 0.5 + pmv);
+          let y = Math.sin(TWO_PI * phi + P[R_FOLD + i] * (gy[i] + gy2[i]) * 0.5 + pmv);
           gy2[i] = gy[i]; gy[i] = y;
+          if (shapeOn) {
+            // T(n+1) = 2y T(n) - T(n-1): the n-th harmonic of a unit sine
+            const o = i * 6, y2 = 2 * y;
+            for (let k = 0; k < 6; k++) sw[o + k] += swD[o + k];
+            let t0 = 1, t1 = y, acc = sw[o] * y;
+            for (let k = 1; k < 6; k++) { const t2 = y2 * t1 - t0; acc += sw[o + k] * t2; t0 = t1; t1 = t2; }
+            y = acc;
+          }
           if (i === 0) y0 = y; else if (i === 1) y1 = y; else if (i === 2) y2 = y; else y3 = y;
         }
 
@@ -1347,6 +1551,11 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         {
           const ax = x < 0 ? -x : x;
           this.cascEnv += (ax - this.cascEnv) * (ax > this.cascEnv ? kAgcA : kAgcR);
+          // for the offline click report: the sharpest bend in the generators' own product
+          const d2 = x - 2 * this.xm1 + this.xm2;
+          this.xm2 = this.xm1; this.xm1 = x;
+          const ad = (d2 < 0 ? -d2 : d2) / (this.cascEnv + 1e-6);
+          if (ad > this.xEdge) this.xEdge = ad;
           this.cascG += (this.cascT - this.cascG) * kAgcG;
         }
         const casc = knee(x * this.cascG * P[R_DRIVE], 1, 2);
@@ -1422,12 +1631,24 @@ class KybernetesProcessor extends AudioWorkletProcessor {
         const fL = hL.i * Math.cos(TWO_PI * p1) - hL.q * Math.sin(TWO_PI * p1);
         const fR = hR.i * Math.cos(TWO_PI * p2) - hR.q * Math.sin(TWO_PI * p2);
 
+        // --- exciter: fresh harmonics from the band above its corner ---
+        let gL = fL, gR = fR;
+        const exA = P[R_EXC];
+        if (exA > 1e-5) { gL += exA * exL.run(fL); gR += exA * exR.run(fR); }
+        // --- harmonizer: two voices at just intervals, mixed into the pass ---
+        const hm = P[R_HMIX];
+        if (hm > 1e-5) {
+          harm.run(gL, gR, rA, rB, P[R_HWIN]);
+          gL += hm * (harm.outL - gL);
+          gR += hm * (harm.outR - gR);
+        } else harm.write(gL, gR);
+
         // --- smear ---
-        smear.run(fL, fR);
+        smear.run(gL, gR);
         const w = P[R_SMR];
         // Loop peak compressor: 3:1 above 0.5, riding the gain over
         // milliseconds rather than bending the waveform.
-        const vL = fL + w * (smear.outL - fL), vR = fR + w * (smear.outR - fR);
+        const vL = gL + w * (smear.outL - gL), vR = gR + w * (smear.outR - gR);
         {
           const al = vL < 0 ? -vL : vL, ar = vR < 0 ? -vR : vR;
           const a = al > ar ? al : ar;

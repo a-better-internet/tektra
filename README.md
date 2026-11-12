@@ -19,25 +19,31 @@ Then open <http://localhost:8000> and press **Engage**. It needs a current Chrom
 ## How the machine is built
 
 ```
- G1 ─┐
+ G1 ─┐            (every generator through the wave shaper)
      ×1 ──┐
  G2 ─┘    ×2 ──┐
  G3 ──────┘    ×3 ──┐
- G4 ───────────┘    ×4 ──► TAPE ──► BANK ──► SHIFT ──► SMEAR ──┬──► OUT ──► reels record it
-                    ▲       ▲                                  │
-                    │       └──────────── feedback ────────────┤
-                    └──────────── multiplied by the return ────┤
- generators' phase ◄──────────────── pushed by the return ─────┘
+ G4 ───────────┘    ×4 ──► TAPE ──► BANK ──► SHIFT ──► EXCITE ──► HARM ──► SMEAR ──┬──► OUT ──► reels record it
+                    ▲       ▲                                                        │
+                    │       └───────────────────── feedback ─────────────────────────┤
+                    └───────────────────── multiplied by the return ─────────────────┤
+ generators' phase ◄────────────────────────── pushed by the return ─────────────────┘
 ```
 
 * **Generators (G1–G4).** Four oscillators that modulate their own phase (fold), pull toward small whole-number frequency ratios with their neighbour (coupling), and have their phase pushed by the loop's return.
 * **Glide.** Anything that changes pitch moves at the glide's pace, stretched by Era: generator pitch, tape speed (a long glide makes a heavy transport that never bends far), reel speed, frequency shift, and the bank's tilt and rotation. The default of 10 seconds makes the web drift rather than swoop. The restless presets use 1.5–2 seconds.
 * **Ratios.** How closely the generators keep their tuning relative to one another as they drift. The cascade's combination tones beat at rates set by small differences between the generators. Let them drift apart and a beat can slide from a fraction of a hertz to several hertz, which sounds like the music speeding up and slowing down. Held ratios (85% by default) make the generators drift together, so the beats stay steady.
 * **No ramps by default.** The calm architectures play their reels at the material's own speed, forwards or backwards. They mirror the frequency shifter (left up, right down), so nothing spirals upward or downward, and none of their pins vary reel speed or shift. The matrix can still move tape length, shift and reel speed when you patch it, but over narrower ranges than before.
+* **Wave shaper.** Each generator's sine passes through a polynomial transfer curve before the cascade. A unit sine through the n-th Chebyshev polynomial is exactly its n-th harmonic, so Shape adds harmonics 2 to 6 in a falling series, from a pure sine toward a bright, saw-like wave, and nothing else. Odd leaves out the even harmonics for a hollow, square-like tone. Any harmonic that would pass 15 kHz fades out, so the shaper never aliases. The cascade then multiplies all those harmonics against each other, which is where most of the new complexity comes from.
 * **Multiplier cascade (×1–×4).** Four ring multipliers in series. Multiplication cancels the input frequencies and leaves their sums and differences. The fourth stage multiplies by the loop's own return: multiplied feedback.
-* **The loop.** A stereo tape delay with two heads, a bank of 24 third-octave band-pass filters (63 Hz to 12.5 kHz), a single-sideband frequency shifter and a smearing reverberator, all *inside* the feedback path. Every pass is re-carved, re-pitched and smeared.
+* **The loop.** A stereo tape delay with two heads, a bank of 24 third-octave band-pass filters (63 Hz to 12.5 kHz), a single-sideband frequency shifter, an exciter, a harmonizer and a smearing reverberator, all *inside* the feedback path. Every pass is re-carved, re-pitched, given new harmonics, harmonized and smeared.
+* **Exciter.** It listens to the band between its corner and 5.2 kHz, and grows that band's second and third harmonics with Chebyshev polynomials:
+  * **Level-independent:** the band is first normalised by an envelope that looks 1 ms ahead, so loud and quiet passes get the same proportion of harmonics, and nothing is ever clipped.
+  * **No aliasing:** the curve is third order and the band ends at 5.2 kHz, so nothing can fold back. Stray products measured 120 dB below the input.
+  * **It compounds:** the new harmonics go round the loop and are excited again, so small settings already brighten noticeably (10% lifts the 2–5 kHz region from about 0.2% to 4% of the energy in Drift Nebula). Warmth eases it by up to 70%.
+* **Harmonizer.** Two voices pitch-shift each pass by just intervals (a fifth is exactly 3:2, a major third 5:4) and are mixed back in, so chords build pass by pass, in tune with a web that has settled into its harmonic series. Each voice reads a short delay line through three heads a third of a window apart, each fading in and out on a sine-squared window, so the level stays steady and no head is heard jumping back. Grain sets the window: long is smooth, short is grainy and more metallic. What goes in is low-passed below the Nyquist limit divided by the highest voice's ratio, so pitched-up voices stay clean, and changing an interval glides. The filter bank removes anything pitched below 63 Hz or above 12.5 kHz on the next pass, so the stacks can't run away.
 * **Eyes.** Envelope followers read the multiplier output, loop level, output level, reel level, low, middle and high spectral share, spectral centre, rate of change and regulation pressure. They habituate: each eye reports how far things are from what it has grown used to.
-* **The matrix.** 14 eyes × 19 destinations (generator pitches, fold, coupling, multiplication depth, tape time, bank tilt and rotation, shift, smear, feedback, reel levels and speed, warmth). Each pin carries a signed amount; amber pins invert.
+* **The matrix.** 14 eyes × 22 destinations (generator pitches, fold, coupling, multiplication depth, tape time, bank tilt and rotation, shift, smear, feedback, reel levels and speed, warmth, wave shaper, exciter and harmonizer mix). Each pin carries a signed amount; amber pins invert.
 * **Homeostasis.** Every band has its own envelope follower driving an inverted VCA. A band that rises the ceiling's worth above an even share of the active bands is held down fast, then let go slowly, so no few bands can hoard the loop and the spectrum keeps moving on. The loop as a whole has a homeostat that inhales (opens the gain slowly toward the setpoint) and exhales (pulls it back once the loop overshoots, until it has fallen by the breath depth). The breathing period isn't set anywhere. It depends on how the web responds.
 * **Metabolism.** A second, much slower regulator watches the breathing itself. When breaths start keeping time like a clock, when their pace hasn't changed for the better part of an hour, or when the loop stops breathing, pressure builds over several minutes. When it's full, the metabolism shifts the setpoint, breath depth and ceiling the homeostat works with, gliding over a minute or two. If its last shift made the breathing more varied it keeps that direction. If not, it reads a new direction off what the eyes see at that moment, so its steps follow the system's own history and never cycle. With no pressure, the offsets drift slowly back home. Era stretches all of it.
 * **Warmth.** The web's colour, from cold and metallic to warm:
@@ -98,7 +104,7 @@ No sample can reach full scale. Every architecture peaks at or below −1 dBTP. 
 * **Colour:** how warm the web ran (percentiles), how much of the time it was warm or cold, its warm spells, and each of Temper's turns.
 * **Motion:** how fast pitch, tape speed, shift, level and brightness change from one second to the next, how far each generator ranges, how many abrupt moves there were, and how far the spectrum evolves over five minutes.
 * **Levels:** sample and true peak of the output, and how often the limiter, output governor and tape level control had to act.
-* **Clicks:** isolated sample discontinuities, each with what the engine was doing at that moment (a reel loop point, a record-head crossing, a tape lurch, the limiter, a gate). Sharp sawtooth edges from heavily folded generators are counted apart, as timbre.
+* **Clicks:** isolated sample discontinuities, each with what the engine was doing at that moment (a reel loop point, a record-head crossing, a tape lurch, the limiter, a gate). Sharp edges and peaks that are already in the generators' own waveform (from heavy fold or the wave shaper) are counted apart, as timbre. An event is put down to the generators only when their product really had a bend that sharp at that moment.
 
 ```bash
 node tools/render.mjs --seconds 600 --preset "Gas Giant" --out gas-giant.wav

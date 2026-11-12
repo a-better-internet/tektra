@@ -99,6 +99,25 @@ export function buildArchitecture(root, api) {
       knob('loop.decay', { label: 'Decay', min: 0, max: 0.97, format: fmt.pct, title: 'Length of the smear' }),
       knob('loop.cross', { label: 'Cross', min: 0, max: 0.5, format: fmt.pct, title: 'Left and right returns feeding each other' })));
 
+  /* ---- timbre: shaper, exciter, harmonizer ---- */
+  const INTERVALS = [
+    [-24, 'Two octaves down', '1:4'], [-19, 'Twelfth down', '1:3'], [-12, 'Octave down', '1:2'], [-7, 'Fifth down', '2:3'],
+    [-5, 'Fourth down', '3:4'], [-4, 'Major third down', '4:5'], [-3, 'Minor third down', '5:6'], [0, 'Unison', '1:1'],
+    [3, 'Minor third up', '6:5'], [4, 'Major third up', '5:4'], [5, 'Fourth up', '4:3'], [7, 'Fifth up', '3:2'],
+    [9, 'Major sixth up', '5:3'], [12, 'Octave up', '2:1'], [16, 'Major tenth up', '5:2'], [19, 'Twelfth up', '3:1'], [24, 'Two octaves up', '4:1'],
+  ].map(([id, name, r]) => ({ id, label: `${name} · ${r}` }));
+  const timbreCard = card('timbre', 'Tb', 'Shaper, exciter, harmonizer', 'The wave shaper bends every generator’s sine through a polynomial curve, adding exact harmonics before the cascade multiplies them. Inside the loop, after the shifter, the exciter grows new upper harmonics from each pass and the harmonizer sings it back at two just intervals, so chords build pass by pass. Warmth eases the exciter and the shaper.',
+    h('div', { class: 'knobs knobs--grid' },
+      knob('shape.amount', { label: 'Shape', min: 0, max: 1, format: fmt.pct, title: 'Wave shaper: from a pure sine toward a bright, saw-like wave with harmonics 2 to 6. Harmonics that would pass 15 kHz fade out, so it never aliases.' }),
+      knob('shape.odd', { label: 'Odd', min: 0, max: 1, format: fmt.pct, title: 'How much the shaper leaves out the even harmonics: 100% gives a hollow, square-like tone' }),
+      knob('exciter.amount', { label: 'Exciter', min: 0, max: 1, format: fmt.pct, title: 'New second and third harmonics grown from the band above the corner on every pass' }),
+      knob('exciter.freq', { label: 'Corner', min: 400, max: 4000, curve: 'log', format: fmt.hz, title: 'Where the exciter starts listening: lower brings out body, higher adds sparkle' }),
+      knob('harm.mix', { label: 'Harmonize', min: 0, max: 0.9, format: fmt.pct, title: 'How much of each pass goes through the harmonizer’s two voices' }),
+      knob('harm.window', { label: 'Grain', min: 0.03, max: 0.15, curve: 'log', format: fmt.sec, title: 'The harmonizer’s window: long is smooth and blurred, short is grainy and more metallic' })),
+    h('div', { class: 'fields' },
+      select('harm-a', 'Voice A', INTERVALS, () => getArch().harm.a, (v) => { getArch().harm.a = +v; changed('harm.a', true, 'voice A'); }),
+      select('harm-b', 'Voice B', INTERVALS, () => getArch().harm.b, (v) => { getArch().harm.b = +v; changed('harm.b', true, 'voice B'); })));
+
   /* ---- homeostasis ---- */
   const homeoCard = card('homeo', 'H', 'Homeostasis', 'Each band has an envelope follower driving an inverted VCA: a band that rises past the ceiling is held down, then slowly let go. The loop as a whole inhales toward the setpoint and exhales past it, and a slower metabolism keeps the breathing itself from settling into a routine.',
     h('div', { class: 'knobs knobs--grid' },
@@ -226,7 +245,7 @@ export function buildArchitecture(root, api) {
   live.recInfo = recInfo;
   live.recFiles = recFiles;
 
-  root.append(genCard, multCard, loopCard, homeoCard, logicCard, outCard, reelCard);
+  root.append(genCard, multCard, loopCard, timbreCard, homeoCard, outCard, logicCard, reelCard);
 
   return {
     sync() { for (const s of syncs) s(); },
